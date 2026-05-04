@@ -935,6 +935,70 @@ h2 {
   min-height: var(--play-area-height);
 }
 
+.game-toast-stack {
+  position: fixed;
+  left: 18px;
+  bottom: 18px;
+  z-index: 30;
+  display: grid;
+  gap: 8px;
+  width: min(320px, calc(100vw - 36px));
+  pointer-events: none;
+}
+
+.game-toast {
+  display: grid;
+  gap: 3px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-left-width: 4px;
+  border-radius: 8px;
+  padding: 10px 12px;
+  color: #f4ead0;
+  background: rgba(8, 12, 16, 0.92);
+  box-shadow: 0 14px 32px rgba(0, 0, 0, 0.36);
+  animation: toast-slide-in 220ms ease-out both;
+}
+
+.game-toast strong {
+  color: #f0c95d;
+  font-size: 0.8rem;
+}
+
+.game-toast span {
+  color: #d8d4c4;
+  font-size: 0.78rem;
+  font-weight: 700;
+  line-height: 1.25;
+}
+
+.game-toast.base {
+  border-left-color: #6eba6e;
+}
+
+.game-toast.danger {
+  border-left-color: #e05d4f;
+}
+
+.game-toast.score {
+  border-left-color: #5aa9e6;
+}
+
+.game-toast.score strong {
+  color: #9ce6ff;
+}
+
+@keyframes toast-slide-in {
+  from {
+    opacity: 0;
+    transform: translate3d(-12px, 8px, 0);
+  }
+
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
 .map-viewport-shell {
   display: grid;
   position: relative;
@@ -2598,6 +2662,46 @@ h2 {
 
 .xp-meter span {
   background: linear-gradient(90deg, #5aa9e6, #f0c95d);
+}
+
+.xp-meter-wrap {
+  position: relative;
+  padding-top: 10px;
+}
+
+.xp-float {
+  position: absolute;
+  left: 50%;
+  top: -10px;
+  z-index: 2;
+  color: #ffdf68;
+  font-size: 1rem;
+  font-weight: 900;
+  line-height: 1;
+  text-shadow:
+    0 2px 0 #000,
+    0 0 8px rgba(0, 0, 0, 0.9),
+    0 0 14px rgba(240, 201, 93, 0.45);
+  transform: translateX(-50%);
+  pointer-events: none;
+  animation: xp-rise 1.35s ease-out forwards;
+}
+
+@keyframes xp-rise {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, 8px) scale(0.82);
+  }
+
+  16% {
+    opacity: 1;
+    transform: translate(-50%, 0) scale(1.08);
+  }
+
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -24px) scale(0.94);
+  }
 }
 
 .progress-panel p:last-child {

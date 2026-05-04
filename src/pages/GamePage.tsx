@@ -97,6 +97,15 @@ interface QueuedMovePreview {
   mode: MoveOrderMode;
 }
 
+interface GameToast {
+  id: string;
+  title: string;
+  message: string;
+  tone: 'base' | 'danger' | 'score';
+}
+
+type UnitInstanceEntry = [string, UnitTypeId];
+
 interface CpuEconomicAction {
   kind: 'reclaimBase' | 'buildBase' | 'upgradeBarracks' | 'upgradeOffense' | 'upgradeDefense' | 'recruit';
   tile?: TileDoc;
@@ -153,10 +162,15 @@ export default function GamePage({
   const [combatLogEntries, setCombatLogEntries] = useState<CombatLogEntry[]>([]);
   const [movementDebugEntries, setMovementDebugEntries] = useState<string[]>([]);
   const [queuedMovePreview, setQueuedMovePreview] = useState<QueuedMovePreview | null>(null);
+  const [toasts, setToasts] = useState<GameToast[]>([]);
   const [isTalentTreeOpen, setIsTalentTreeOpen] = useState(false);
   const [busyTalentId, setBusyTalentId] = useState<TalentId | null>(null);
   const cpuTurnKeyRef = useRef('');
   const roundAdvanceKeyRef = useRef('');
+  const previousActiveBaseIdsRef = useRef<Set<string> | null>(null);
+  const previousPlayerUnitIdsRef = useRef<Map<string, UnitTypeId> | null>(null);
+  const previousScoreLeaderIdRef = useRef<string | null>(null);
+  const toastSnapshotKeyRef = useRef('');
 
   const selectedArmy = gameState.armies.find((army) => army.id === selectedArmyId) ?? null;
   const currentTurnPlayer = gameState.players.find((player) => player.id === gameState.game.currentTurnPlayerId) ?? null;
@@ -198,6 +212,73 @@ export default function GamePage({
       mode: selectedArmy.queuedMoveMode ?? 'aggressive',
     } satisfies QueuedMovePreview;
   }, [currentPlayer, gameState.armies, gameState.tiles, selectedArmy, selectedQueuedDestinationTile, selectedTile]);
+
+  function pushToast(toast: Omit<GameToast, 'id'>) {
+    const id = `${Date.now()}_${Math.random()}`;
+    setToasts((current) => [...current, { ...toast, id }].slice(-4));
+    window.setTimeout(() => {
+      setToasts((current) => current.filter((entry) => entry.id !== id));
+    }, 4200);
+  }
+
+  useEffect(() => {
+    const snapshotKey = `${gameState.game.id}:${currentPlayer.id}`;
+    if (toastSnapshotKeyRef.current !== snapshotKey) {
+      previousActiveBaseIdsRef.current = null;
+      previousPlayerUnitIdsRef.current = null;
+      previousScoreLeaderIdRef.current = null;
+      toastSnapshotKeyRef.current = snapshotKey;
+    }
+
+    const activeBaseIds = new Set(
+      gameState.tiles.filter((tile) => tile.base?.ownerId && !tile.base.ruined).map((tile) => tile.id),
+    );
+    const playerUnitIds = new Map<string, UnitTypeId>(
+      gameState.armies
+        .filter((army) => army.ownerId === currentPlayer.id)
+        .flatMap((army) => army.units.map((unit) => [unit.id, unit.typeId] as UnitInstanceEntry)),
+    );
+
+    const previousActiveBaseIds = previousActiveBaseIdsRef.current;
+    const previousPlayerUnitIds = previousPlayerUnitIdsRef.current;
+
+    if (previousActiveBaseIds) {
+      gameState.tiles.forEach((tile) => {
+        if (!tile.base?.ownerId || tile.base.ruined || previousActiveBaseIds.has(tile.id)) return;
+        const ownerName = gameState.players.find((player) => player.id === tile.base?.ownerId)?.name ?? 'A player';
+        pushToast({
+          title: 'Base Built',
+          message: `${ownerName} built a base at ${tile.x}, ${tile.y}.`,
+          tone: 'base',
+        });
+      });
+    }
+
+    if (previousPlayerUnitIds) {
+      previousPlayerUnitIds.forEach((typeId, unitId) => {
+        if (playerUnitIds.has(unitId)) return;
+        pushToast({
+          title: 'Squad Lost',
+          message: `Your ${UNIT_TYPES[typeId]?.name ?? 'squad'} was killed.`,
+          tone: 'danger',
+        });
+      });
+    }
+
+    const scoreLeader = gameState.game.turnLimitRounds ? scoreLeaderForPlayers(gameState.players) : null;
+    const previousScoreLeaderId = previousScoreLeaderIdRef.current;
+    if (scoreLeader && previousScoreLeaderId && scoreLeader.id !== previousScoreLeaderId) {
+      pushToast({
+        title: 'Lead Change',
+        message: `${scoreLeader.name} took the score lead with ${scoreLeader.score} XP.`,
+        tone: 'score',
+      });
+    }
+
+    previousActiveBaseIdsRef.current = activeBaseIds;
+    previousPlayerUnitIdsRef.current = playerUnitIds;
+    previousScoreLeaderIdRef.current = scoreLeader?.id ?? null;
+  }, [currentPlayer.id, gameState.armies, gameState.game.id, gameState.game.turnLimitRounds, gameState.players, gameState.tiles]);
   const deployedUnits = gameState.armies
     .filter((army) => army.ownerId === currentPlayer.id)
     .reduce((total, army) => total + army.units.length, 0);
@@ -1036,6 +1117,14 @@ export default function GamePage({
         onSpendTalent={handleSpendTalent}
         onClose={() => setIsTalentTreeOpen(false)}
       />
+      <div className="game-toast-stack" aria-live="polite" aria-atomic="false">
+        {toasts.map((toast) => (
+          <div className={`game-toast ${toast.tone}`} key={toast.id}>
+            <strong>{toast.title}</strong>
+            <span>{toast.message}</span>
+          </div>
+        ))}
+      </div>
     </section>
   );
 }
@@ -1368,6 +1457,24 @@ function playMovementSound(tileCount: number, mode: MovementSoundMode, durationM
       playUiSound(MOVEMENT_SOUND_PATH, 0.3);
     }, index * stepInterval);
   });
+}
+
+function scoreLeaderForPlayers(players: PlayerDoc[]) {
+  const activePlayers = players.filter((player) => !player.isEliminated);
+  if (activePlayers.length === 0) return null;
+  const scoredPlayers = activePlayers
+    .map((player) => ({ ...player, score: totalCommanderXp(player.level, player.xp) }))
+    .sort((a, b) => b.score - a.score);
+  if (scoredPlayers.length > 1 && scoredPlayers[0].score === scoredPlayers[1].score) return null;
+  return scoredPlayers[0];
+}
+
+function totalCommanderXp(level: number, currentLevelXp: number) {
+  let total = currentLevelXp;
+  for (let previousLevel = 1; previousLevel < level; previousLevel += 1) {
+    total += 100 + (previousLevel - 1) * 50;
+  }
+  return total;
 }
 
 function playUiSound(path: string, volume: number) {
