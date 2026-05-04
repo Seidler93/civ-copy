@@ -1,29 +1,39 @@
-export interface ArtilleryStrikeConfig {
+import type { UnitTypeId } from '../types/gameTypes';
+
+export interface ArtillerySquadConfig {
   id: string;
   name: string;
+  unitTypeId: UnitTypeId;
   cost: number;
+  ability: string;
   description: string;
 }
 
-export const ARTILLERY_UNLOCK_BARRACKS_LEVEL = 4;
+export const ARTILLERY_UNLOCK_BARRACKS_LEVEL = 5;
 
-export const ARTILLERY_STRIKES: ArtilleryStrikeConfig[] = [
+export const ARTILLERY_SQUADS: ArtillerySquadConfig[] = [
   {
     id: 'lightBarrage',
     name: 'Light Barrage',
+    unitTypeId: 'lightArtillery',
     cost: 35,
-    description: 'A cheap strike option intended for softening a single unit.',
+    ability: '+2 attack when shelling enemy squads. Fires every other round.',
+    description: 'Mobile light guns for softening enemy squads at long range.',
   },
   {
     id: 'smokeScreen',
     name: 'Smoke Screen',
+    unitTypeId: 'smokeArtillery',
     cost: 30,
-    description: 'A tactical strike option intended for reducing enemy combat effectiveness.',
+    ability: 'Enemy defense response is reduced by 15%.',
+    description: 'Smoke shells disrupt defenders and make return fire less effective.',
   },
   {
     id: 'siegeShelling',
     name: 'Siege Shelling',
+    unitTypeId: 'siegeArtillery',
     cost: 55,
-    description: 'A heavier strike option intended for pressuring bases and fortified positions.',
+    ability: '+4 attack against bases, trenches, or fortified units.',
+    description: 'Heavy guns built to crack bases and prepared positions.',
   },
 ];

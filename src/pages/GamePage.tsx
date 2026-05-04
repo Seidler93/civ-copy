@@ -17,6 +17,7 @@ import {
   buildTrenchWithBuilder,
   combineArmies,
   devSpawnUnitAtTile,
+  deploySmokeScreen,
   dismissUnitFromArmy,
   endTurn,
   fortifyArmy,
@@ -38,13 +39,16 @@ import {
   MAX_DEPLOYED_UNITS,
   clearArmyMoveOrder,
 } from '../firebase/gameService';
-import type { ArmyDoc, GameState, MoveOrderMode, PlayerDoc, TalentId, TileDoc, UnitTypeId } from '../types/gameTypes';
+import type { ArmyDoc, GameState, MoveOrderMode, MoveOutcome, PlayerDoc, TalentId, TileDoc, UnitTypeId } from '../types/gameTypes';
 import {
   canAttackTile,
+  ARTILLERY_UNIT_TYPES,
   canLogisticsBuildBase,
   canCombineArmies,
   canMoveArmy,
   getAttackStagingTile,
+  isActiveBaseTile,
+  isTileInAttackRange,
   isImpassableTerrain,
   manhattanDistance,
   movementAllowance,
@@ -73,6 +77,7 @@ interface BulletTrace {
   toTileId: string;
   delayMs: number;
   laneOffset: number;
+  kind?: 'direct' | 'arc';
 }
 
 interface AttackFacing {
@@ -116,6 +121,8 @@ interface GamePageProps {
   unitTileOwnerTintEnabled: boolean;
   unitTileOwnerTintIntensity: number;
   unitOwnerBarEnabled: boolean;
+  attackRadiusVisible: boolean;
+  qualityTabHidden: boolean;
   onDevSpawnUnitTypeChange: (unitTypeId: UnitTypeId | '') => void;
 }
 
@@ -128,11 +135,14 @@ export default function GamePage({
   unitTileOwnerTintEnabled,
   unitTileOwnerTintIntensity,
   unitOwnerBarEnabled,
+  attackRadiusVisible,
+  qualityTabHidden,
   onDevSpawnUnitTypeChange,
 }: GamePageProps) {
   const [selectedArmyId, setSelectedArmyId] = useState<string | null>(null);
   const [targetedAttackTileId, setTargetedAttackTileId] = useState<string | null>(null);
   const [targetedMergeTileId, setTargetedMergeTileId] = useState<string | null>(null);
+  const [smokeTargetingArmyId, setSmokeTargetingArmyId] = useState<string | null>(null);
   const [selectedBaseTileId, setSelectedBaseTileId] = useState<string | null>(null);
   const [message, setMessage] = useState('Select one of your units to move.');
   const [combatTexts, setCombatTexts] = useState<FloatingCombatText[]>([]);
@@ -141,6 +151,7 @@ export default function GamePage({
   const [attackFacings, setAttackFacings] = useState<AttackFacing[]>([]);
   const [artilleryImpacts, setArtilleryImpacts] = useState<ArtilleryImpact[]>([]);
   const [combatLogEntries, setCombatLogEntries] = useState<CombatLogEntry[]>([]);
+  const [movementDebugEntries, setMovementDebugEntries] = useState<string[]>([]);
   const [queuedMovePreview, setQueuedMovePreview] = useState<QueuedMovePreview | null>(null);
   const [isTalentTreeOpen, setIsTalentTreeOpen] = useState(false);
   const [busyTalentId, setBusyTalentId] = useState<TalentId | null>(null);
@@ -152,6 +163,7 @@ export default function GamePage({
   const isTimedMode = gameState.game.mode === 'timed-simultaneous';
   const isMyTurn =
     gameState.game.status === 'active' &&
+    !gameState.game.isPaused &&
     !currentPlayer.isEliminated &&
     (isTimedMode || gameState.game.currentTurnPlayerId === currentPlayer.id);
 
@@ -192,7 +204,7 @@ export default function GamePage({
   const selectedDevPlayerId = devPlayerId || currentPlayer.id;
 
   useEffect(() => {
-    if (!isTimedMode || gameState.game.status !== 'active' || !gameState.game.roundEndsAtMs) return undefined;
+    if (!isTimedMode || gameState.game.status !== 'active' || gameState.game.isPaused || !gameState.game.roundEndsAtMs) return undefined;
 
     const timeoutMs = Math.max(0, gameState.game.roundEndsAtMs - Date.now());
     const roundKey = `${gameState.game.id}:${gameState.game.roundNumber}`;
@@ -203,7 +215,15 @@ export default function GamePage({
     }, timeoutMs + 50);
 
     return () => window.clearTimeout(timer);
-  }, [gameState.game.id, gameState.game.mode, gameState.game.roundEndsAtMs, gameState.game.roundNumber, gameState.game.status, isTimedMode]);
+  }, [
+    gameState.game.id,
+    gameState.game.isPaused,
+    gameState.game.mode,
+    gameState.game.roundEndsAtMs,
+    gameState.game.roundNumber,
+    gameState.game.status,
+    isTimedMode,
+  ]);
 
   useEffect(() => {
     if (!queuedMovePreview) return;
@@ -214,7 +234,7 @@ export default function GamePage({
   useEffect(() => {
     if (isTimedMode) return undefined;
     const cpuPlayer = currentTurnPlayer?.isCpu ? currentTurnPlayer : null;
-    if (!cpuPlayer || gameState.game.status !== 'active') return;
+    if (!cpuPlayer || gameState.game.status !== 'active' || gameState.game.isPaused) return;
 
     const turnKey = `${gameState.game.id}:${gameState.game.roundNumber}:${gameState.game.turnNumber}:${cpuPlayer.id}`;
     if (cpuTurnKeyRef.current === turnKey) return;
@@ -234,7 +254,7 @@ export default function GamePage({
 
   useEffect(() => {
     const cpuPlayer = gameState.players.find((player) => player.isCpu) ?? null;
-    if (!isTimedMode || !cpuPlayer || gameState.game.status !== 'active' || cpuPlayer.isEliminated) return;
+    if (!isTimedMode || !cpuPlayer || gameState.game.status !== 'active' || gameState.game.isPaused || cpuPlayer.isEliminated) return;
 
     const cpuArmies = gameState.armies.filter((army) => army.ownerId === cpuPlayer.id);
     if (cpuArmies.every((army) => army.hasActedThisTurn && (army.movementUsedThisTurn ?? 0) > 0)) return;
@@ -251,6 +271,8 @@ export default function GamePage({
   }, [gameState, isTimedMode]);
 
   async function runCpuTurn(cpuPlayer: PlayerDoc) {
+    if (gameState.game.isPaused) return;
+
     try {
       const economyAction = chooseCpuEconomicAction(cpuPlayer, gameState.tiles, gameState.armies);
       let plannedTiles = gameState.tiles;
@@ -285,15 +307,10 @@ export default function GamePage({
       }
 
       const cpuArmies = plannedArmies.filter((army) => army.ownerId === cpuPlayer.id && army.units.length > 0);
-      const attack = findCpuAttack(cpuPlayer, cpuArmies, plannedTiles, plannedArmies);
+      const attack = findCpuAttack(cpuPlayer, cpuArmies, plannedTiles, plannedArmies, gameState.game.roundNumber);
       if (attack) {
         setMessage(`${cpuPlayer.name} attacks.`);
-        showAttackFacing(attack.army.id, attack.fromTile, attack.targetTile);
-        showBulletTraces(attack.fromTile.id, attack.targetTile.id);
-        if (attack.army.units.length === 1 && attack.army.units[0].typeId === 'artillery') {
-          showArtilleryImpact(attack.targetTile.id);
-        }
-        playRiflemanShotBurst(attack.army);
+        playAttackAnimation(attack.army, attack.fromTile, attack.targetTile, attack.defenderArmy);
         await attackTile(gameState.game.id, attack.army.id, attack.targetTile.id, cpuPlayer.id);
         await delay(900);
         if (!isTimedMode) await endTurn(gameState.game.id, cpuPlayer.id);
@@ -311,9 +328,18 @@ export default function GamePage({
         const durationMs = moveAnimationDuration(stepCount);
         playMovementSound(stepCount, movementSoundMode, durationMs);
         const result = await moveArmy(gameState.game.id, move.army.id, move.targetTile.id, cpuPlayer.id);
+        addMovementDebug(result, `${cpuPlayer.name} move`);
         showMoveAnimation(move.targetTile, move.fromTile, durationMs);
         if (result.triggeredMineTileId && result.mineDamage) showCombatText(result.triggeredMineTileId, `-${result.mineDamage}`);
-        if (result.sentryDamage) showCombatText(move.targetTile.id, `-${result.sentryDamage}`);
+        if (result.sentryDamage) {
+          const sentryTargetTileId = result.sentryTriggerTileId ?? move.targetTile.id;
+          if (result.sentryBaseTileId) showBulletTraces(result.sentryBaseTileId, sentryTargetTileId, Math.max(120, durationMs - 260));
+          showCombatText(sentryTargetTileId, `-${result.sentryDamage}`);
+        }
+        if (result.sentryReturnFirePower && result.sentryBaseTileId) {
+          showBulletTraces(result.sentryTriggerTileId ?? move.targetTile.id, result.sentryBaseTileId, Math.max(220, durationMs - 140));
+          showCombatText(result.sentryBaseTileId, result.sentryBaseDestroyed ? 'Base down' : `A${result.sentryReturnFirePower}`);
+        }
         await delay(durationMs + 250);
       }
 
@@ -329,6 +355,21 @@ export default function GamePage({
   }
 
   async function handleTileClick(tile: TileDoc, occupyingArmy: ArmyDoc | null) {
+    if (gameState.game.isPaused) {
+      setTargetedAttackTileId(null);
+      setTargetedMergeTileId(null);
+      if (occupyingArmy) {
+        setSelectedArmyId(selectedArmyId === occupyingArmy.id ? null : occupyingArmy.id);
+        setMessage('Gameplay is paused. You can inspect the map, but actions are locked.');
+      } else if (tile.base?.ownerId === currentPlayer.id) {
+        setSelectedBaseTileId(tile.id);
+        setMessage('Gameplay is paused. Base management is view-only until the host resumes.');
+      } else {
+        setMessage('Gameplay is paused by the host.');
+      }
+      return;
+    }
+
     if (import.meta.env.DEV && devSpawnUnitType) {
       try {
         const result = await devSpawnUnitAtTile(gameState.game.id, selectedDevPlayerId, devSpawnUnitType, tile.id);
@@ -337,6 +378,36 @@ export default function GamePage({
         onDevSpawnUnitTypeChange('');
       } catch (err) {
         setMessage(err instanceof Error ? err.message : 'Dev spawn failed.');
+      }
+      return;
+    }
+
+    if (smokeTargetingArmyId) {
+      const smokeArmy = gameState.armies.find((army) => army.id === smokeTargetingArmyId) ?? null;
+      const smokeFromTile = smokeArmy ? tileById.get(smokeArmy.tileId) ?? null : null;
+      if (!smokeArmy || !smokeFromTile || smokeArmy.ownerId !== currentPlayer.id) {
+        setSmokeTargetingArmyId(null);
+        setMessage('Smoke Screen targeting cancelled.');
+        return;
+      }
+      if (occupyingArmy?.id === smokeTargetingArmyId) {
+        cancelSmokeTargeting();
+        return;
+      }
+      if (!isMyTurn || !isTileInAttackRange(smokeArmy, smokeFromTile, tile, gameState.tiles)) {
+        setMessage('Choose a highlighted tile within Smoke Screen range and line of sight.');
+        return;
+      }
+      try {
+        playAttackAnimation(smokeArmy, smokeFromTile, tile, null);
+        const result = await deploySmokeScreen(gameState.game.id, smokeArmy.id, tile.id, currentPlayer.id);
+        smokeAreaTiles(tile, gameState.tiles).forEach((smokeTile) => showCombatText(smokeTile.id, 'Smoke'));
+        setSmokeTargetingArmyId(null);
+        setTargetedAttackTileId(null);
+        setTargetedMergeTileId(null);
+        setMessage(result);
+      } catch (err) {
+        setMessage(err instanceof Error ? err.message : 'Smoke Screen failed.');
       }
       return;
     }
@@ -352,6 +423,7 @@ export default function GamePage({
 
     if (selectedArmyCanMerge) {
       setQueuedMovePreview(null);
+      setSmokeTargetingArmyId(null);
       setTargetedAttackTileId(null);
       setTargetedMergeTileId(targetedMergeTileId === tile.id ? null : tile.id);
       setMessage('Friendly unit selected. Click Combine to merge these squads.');
@@ -365,10 +437,11 @@ export default function GamePage({
       isMyTurn &&
       ((occupyingArmy && occupyingArmy.ownerId !== currentPlayer.id) ||
         (tile.base && !tile.base.ruined && tile.base.ownerId !== currentPlayer.id)) &&
-      getAttackStagingTile(gameState.tiles, selectedArmy, selectedTile, tile, currentPlayer, gameState.armies);
+      getAttackStagingTile(gameState.tiles, selectedArmy, selectedTile, tile, currentPlayer, gameState.armies, gameState.game.roundNumber);
 
     if (selectedArmyCanTarget) {
       setQueuedMovePreview(null);
+      setSmokeTargetingArmyId(null);
       setTargetedMergeTileId(null);
       setTargetedAttackTileId(targetedAttackTileId === tile.id ? null : tile.id);
       setMessage('Target selected. Click Attack to start combat.');
@@ -377,6 +450,7 @@ export default function GamePage({
 
     setTargetedAttackTileId(null);
     setTargetedMergeTileId(null);
+    setSmokeTargetingArmyId(null);
 
     if (occupyingArmy) {
       setQueuedMovePreview(null);
@@ -419,6 +493,7 @@ export default function GamePage({
         if (
           isTimedMode &&
           !tile.armyId &&
+          !isActiveBaseTile(tile) &&
           !isImpassableTerrain(tile) &&
           selectedArmy.queuedMoveTileId !== tile.id
         ) {
@@ -438,18 +513,25 @@ export default function GamePage({
       }
 
       let latestMessage = '';
-      const movementWaypoints = path.filter((stepTile) => !stepTile.armyId);
+      const movementWaypoints = path.filter((stepTile) => !stepTile.armyId && !isActiveBaseTile(stepTile));
       if (movementWaypoints.length > 0) {
         const finalTile = movementWaypoints[movementWaypoints.length - 1];
         const result = await moveArmy(gameState.game.id, selectedArmy.id, finalTile.id, currentPlayer.id);
         latestMessage = result.message;
+        addMovementDebug(result, 'Your move');
         const durationMs = moveAnimationDuration(movementWaypoints.length);
         playMovementSound(movementWaypoints.length, movementSoundMode, durationMs);
         if (result.triggeredMineTileId && result.mineDamage) {
           showCombatText(result.triggeredMineTileId, `-${result.mineDamage}`);
         }
         if (result.sentryDamage) {
-          showCombatText(finalTile.id, `-${result.sentryDamage}`);
+          const sentryTargetTileId = result.sentryTriggerTileId ?? finalTile.id;
+          if (result.sentryBaseTileId) showBulletTraces(result.sentryBaseTileId, sentryTargetTileId, Math.max(120, durationMs - 260));
+          showCombatText(sentryTargetTileId, `-${result.sentryDamage}`);
+        }
+        if (result.sentryReturnFirePower && result.sentryBaseTileId) {
+          showBulletTraces(result.sentryTriggerTileId ?? finalTile.id, result.sentryBaseTileId, Math.max(220, durationMs - 140));
+          showCombatText(result.sentryBaseTileId, result.sentryBaseDestroyed ? 'Base down' : `A${result.sentryReturnFirePower}`);
         }
         if (result.armyDestroyed) {
           setSelectedArmyId(null);
@@ -471,22 +553,13 @@ export default function GamePage({
   }
 
   async function handleAttackClick(tile: TileDoc) {
+    if (isGameplayPaused()) return;
     if (!selectedArmy || !isMyTurn) return;
 
     try {
       const defenderArmy = tile.armyId ? gameState.armies.find((army) => army.id === tile.armyId) ?? null : null;
       if (selectedTile) {
-        showAttackFacing(selectedArmy.id, selectedTile, tile);
-        showBulletTraces(selectedTile.id, tile.id);
-        if (selectedArmy.units.length === 1 && selectedArmy.units[0].typeId === 'artillery') {
-          showArtilleryImpact(tile.id);
-        }
-        playRiflemanShotBurst(selectedArmy);
-        if (defenderArmy) {
-          showAttackFacing(defenderArmy.id, tile, selectedTile);
-          showBulletTraces(tile.id, selectedTile.id, 120);
-          playRiflemanShotBurst(defenderArmy, 180);
-        }
+        playAttackAnimation(selectedArmy, selectedTile, tile, defenderArmy);
       }
 
       const result = await attackTile(gameState.game.id, selectedArmy.id, tile.id, currentPlayer.id);
@@ -528,6 +601,7 @@ export default function GamePage({
   }
 
   async function handleCombineClick(targetArmy: ArmyDoc) {
+    if (isGameplayPaused()) return;
     if (!selectedArmy || !isMyTurn) return;
 
     try {
@@ -542,6 +616,7 @@ export default function GamePage({
   }
 
   async function handleDismissUnit(unitId: string) {
+    if (isGameplayPaused()) return;
     if (!selectedArmy) return;
 
     try {
@@ -559,6 +634,7 @@ export default function GamePage({
   }
 
   async function handleSeparateUnit(unitId: string) {
+    if (isGameplayPaused()) return;
     if (!selectedArmy) return;
 
     try {
@@ -574,6 +650,7 @@ export default function GamePage({
   }
 
   async function handleBuildBaseClick(army: ArmyDoc) {
+    if (isGameplayPaused()) return;
     try {
       const result = await buildBaseWithBuilder(gameState.game.id, army.id, currentPlayer.id);
       setMessage(result);
@@ -584,6 +661,7 @@ export default function GamePage({
   }
 
   async function handleBuildTrenchClick(army: ArmyDoc) {
+    if (isGameplayPaused()) return;
     try {
       const result = await buildTrenchWithBuilder(gameState.game.id, army.id, currentPlayer.id);
       setMessage(result);
@@ -594,6 +672,7 @@ export default function GamePage({
   }
 
   async function handleReclaimBaseClick(army: ArmyDoc) {
+    if (isGameplayPaused()) return;
     try {
       const result = await reclaimBaseWithBuilder(gameState.game.id, army.id, currentPlayer.id);
       setMessage(result);
@@ -605,6 +684,7 @@ export default function GamePage({
   }
 
   async function handleScavengeClick(army: ArmyDoc) {
+    if (isGameplayPaused()) return;
     try {
       const result = await scavengeSuppliesWithBuilder(gameState.game.id, army.id, currentPlayer.id);
       setMessage(result);
@@ -615,6 +695,7 @@ export default function GamePage({
   }
 
   async function handleHealClick(army: ArmyDoc) {
+    if (isGameplayPaused()) return;
     try {
       const result = await healArmyWithMedic(gameState.game.id, army.id, currentPlayer.id);
       setMessage(result);
@@ -625,6 +706,7 @@ export default function GamePage({
   }
 
   async function handlePlaceMineClick(army: ArmyDoc) {
+    if (isGameplayPaused()) return;
     try {
       const result = await placeMineWithAntiVehicle(gameState.game.id, army.id, currentPlayer.id);
       setMessage(result);
@@ -634,7 +716,24 @@ export default function GamePage({
     }
   }
 
+  function handleSmokeScreenClick(army: ArmyDoc) {
+    if (isGameplayPaused()) return;
+    if (!isMyTurn || army.ownerId !== currentPlayer.id || army.hasActedThisTurn) return;
+    setSelectedArmyId(army.id);
+    setSmokeTargetingArmyId(army.id);
+    setTargetedAttackTileId(null);
+    setTargetedMergeTileId(null);
+    setQueuedMovePreview(null);
+    setMessage('Smoke Screen ready. Hover to preview the 2x2 smoke area, then click a highlighted tile to fire.');
+  }
+
+  function cancelSmokeTargeting() {
+    setSmokeTargetingArmyId(null);
+    setMessage('Smoke Screen targeting cancelled.');
+  }
+
   async function handleFortifyClick(army: ArmyDoc) {
+    if (isGameplayPaused()) return;
     try {
       const result = await fortifyArmy(gameState.game.id, army.id, currentPlayer.id);
       setMessage(result);
@@ -645,6 +744,7 @@ export default function GamePage({
   }
 
   async function handleSetMoveOrderMode(army: ArmyDoc, mode: MoveOrderMode) {
+    if (isGameplayPaused()) return;
     try {
       const result = await setArmyMoveOrderMode(gameState.game.id, army.id, currentPlayer.id, mode);
       if (selectedQueuedMovePreview) {
@@ -657,6 +757,7 @@ export default function GamePage({
   }
 
   async function handleClearMoveOrder(army: ArmyDoc) {
+    if (isGameplayPaused()) return;
     try {
       const result = await clearArmyMoveOrder(gameState.game.id, army.id, currentPlayer.id);
       setQueuedMovePreview(null);
@@ -675,6 +776,7 @@ export default function GamePage({
   }
 
   async function handleRecruit(unitTypeId: UnitTypeId) {
+    if (isGameplayPaused()) return;
     if (!selectedBaseTile) return;
     try {
       const result = await recruitUnitAtBase(gameState.game.id, selectedBaseTile.id, unitTypeId, currentPlayer.id);
@@ -685,6 +787,7 @@ export default function GamePage({
   }
 
   async function handleRecruitComposition(compositionId: string) {
+    if (isGameplayPaused()) return;
     if (!selectedBaseTile) return;
     try {
       const result = await recruitUnitCompositionAtBase(gameState.game.id, selectedBaseTile.id, compositionId, currentPlayer.id);
@@ -695,6 +798,7 @@ export default function GamePage({
   }
 
   async function handleBaseUpgrade(action: BaseUpgradeAction) {
+    if (isGameplayPaused()) return;
     if (!selectedBaseTile) return;
     try {
       const result =
@@ -718,6 +822,7 @@ export default function GamePage({
   }
 
   async function handleSpendTalent(talentId: TalentId) {
+    if (isGameplayPaused()) return;
     setBusyTalentId(talentId);
     try {
       const result = await spendTalentPoint(gameState.game.id, currentPlayer.id, talentId);
@@ -730,12 +835,27 @@ export default function GamePage({
     }
   }
 
+  function isGameplayPaused() {
+    if (!gameState.game.isPaused) return false;
+    setMessage('Gameplay is paused. You can inspect the map, but actions are locked until the host resumes.');
+    return true;
+  }
+
   function showCombatText(tileId: string, text: string) {
     const id = `${tileId}_${Date.now()}_${Math.random()}`;
     setCombatTexts((current) => [...current, { id, tileId, text, tone: text.startsWith('-') ? 'damage' : 'status' }]);
     window.setTimeout(() => {
       setCombatTexts((current) => current.filter((entry) => entry.id !== id));
     }, 1300);
+  }
+
+  function addMovementDebug(result: MoveOutcome, label: string) {
+    const debugLines = result.debugLines ?? [];
+    if (debugLines.length === 0) return;
+    const timestamp = new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' });
+    setMovementDebugEntries((current) =>
+      [`[${timestamp}] ${label}: ${result.message}`, ...debugLines.map((line) => `  ${line}`), ...current].slice(0, 18),
+    );
   }
 
   function showMoveAnimation(tile: TileDoc, fromTile: TileDoc, durationMs = MOVE_ANIMATION_STEP_MS) {
@@ -758,11 +878,29 @@ export default function GamePage({
       toTileId,
       delayMs: Math.max(0, startOffsetMs + index * 70),
       laneOffset: laneOffsets[index % laneOffsets.length],
+      kind: 'direct' as const,
     }));
     setBulletTraces((current) => [...current, ...traces]);
     window.setTimeout(() => {
       setBulletTraces((current) => current.filter((entry) => !entry.id.startsWith(idPrefix)));
     }, 1650);
+  }
+
+  function showArtilleryShells(fromTileId: string, toTileId: string, startOffsetMs = 0) {
+    const idPrefix = `shell_${fromTileId}_${toTileId}_${Date.now()}`;
+    const laneOffsets = [-10, 0, 10, -4, 6];
+    const traces = Array.from({ length: 5 }, (_, index) => ({
+      id: `${idPrefix}_${index}`,
+      fromTileId,
+      toTileId,
+      delayMs: Math.max(0, startOffsetMs + index * 115),
+      laneOffset: laneOffsets[index % laneOffsets.length],
+      kind: 'arc' as const,
+    }));
+    setBulletTraces((current) => [...current, ...traces]);
+    window.setTimeout(() => {
+      setBulletTraces((current) => current.filter((entry) => !entry.id.startsWith(idPrefix)));
+    }, 1900);
   }
 
   function showAttackFacing(armyId: string, fromTile: TileDoc, toTile: TileDoc) {
@@ -774,12 +912,38 @@ export default function GamePage({
     }, 1700);
   }
 
-  function showArtilleryImpact(tileId: string) {
+  function showArtilleryImpact(tileId: string, delayMs = 0) {
     const id = `${tileId}_${Date.now()}_${Math.random()}`;
-    setArtilleryImpacts((current) => [...current, { id, tileId }]);
+    window.setTimeout(() => {
+      setArtilleryImpacts((current) => [...current, { id, tileId }]);
+    }, delayMs);
     window.setTimeout(() => {
       setArtilleryImpacts((current) => current.filter((entry) => entry.id !== id));
-    }, 1200);
+    }, delayMs + 1200);
+  }
+
+  function playAttackAnimation(attacker: ArmyDoc, fromTile: TileDoc, targetTile: TileDoc, defender: ArmyDoc | null) {
+    const attackerUsesArtillery = attacker.units.length === 1 && ARTILLERY_UNIT_TYPES.has(attacker.units[0].typeId);
+    showAttackFacing(attacker.id, fromTile, targetTile);
+    if (attackerUsesArtillery) {
+      showArtilleryShells(fromTile.id, targetTile.id);
+      showArtilleryImpact(targetTile.id, 620);
+    } else {
+      showBulletTraces(fromTile.id, targetTile.id);
+      playRiflemanShotBurst(attacker);
+    }
+
+    if (!defender) return;
+    if (!isTileInAttackRange(defender, targetTile, fromTile, gameState.tiles)) return;
+    const defenderUsesArtillery = defender.units.length === 1 && ARTILLERY_UNIT_TYPES.has(defender.units[0].typeId);
+    showAttackFacing(defender.id, targetTile, fromTile);
+    if (defenderUsesArtillery) {
+      showArtilleryShells(targetTile.id, fromTile.id, 180);
+      showArtilleryImpact(fromTile.id, 800);
+    } else {
+      showBulletTraces(targetTile.id, fromTile.id, 90);
+      playRiflemanShotBurst(defender, 120);
+    }
   }
 
   return (
@@ -805,6 +969,7 @@ export default function GamePage({
           selectedArmy={selectedArmy}
           targetedAttackTileId={targetedAttackTileId}
           targetedMergeTileId={targetedMergeTileId}
+          smokeTargetingArmyId={smokeTargetingArmyId}
           combatTexts={combatTexts}
           moveAnimations={moveAnimations}
           bulletTraces={bulletTraces}
@@ -814,6 +979,7 @@ export default function GamePage({
           unitTileOwnerTintEnabled={unitTileOwnerTintEnabled}
           unitTileOwnerTintIntensity={unitTileOwnerTintIntensity}
           unitOwnerBarEnabled={unitOwnerBarEnabled}
+          attackRadiusVisible={attackRadiusVisible}
           onTileClick={handleTileClick}
           onAttackClick={handleAttackClick}
           onCombineClick={handleCombineClick}
@@ -823,10 +989,12 @@ export default function GamePage({
           onScavengeClick={handleScavengeClick}
           onHealClick={handleHealClick}
           onPlaceMineClick={handlePlaceMineClick}
+          onSmokeScreenClick={handleSmokeScreenClick}
           onFortifyClick={handleFortifyClick}
           onSetMoveOrderMode={handleSetMoveOrderMode}
           onClearMoveOrder={handleClearMoveOrder}
           onBaseClick={handleBaseClick}
+          onCancelSmokeTargeting={cancelSmokeTargeting}
         />
       </div>
       <aside className="right-rail">
@@ -840,6 +1008,7 @@ export default function GamePage({
           combatEntries={combatLogEntries}
           entries={[
             message,
+            ...movementDebugEntries,
             selectedArmy && selectedTile
               ? selectedArmy.queuedMoveTileId
                 ? `Selected unit at ${selectedTile.x}, ${selectedTile.y}. Ordered to ${selectedQueuedDestinationTile?.x ?? '?'}, ${selectedQueuedDestinationTile?.y ?? '?'} in ${selectedQueuedMovePreview?.turnsRemaining ?? '?'} rounds (${selectedArmy.queuedMoveMode ?? 'aggressive'}).`
@@ -854,6 +1023,7 @@ export default function GamePage({
         armies={gameState.armies}
         player={currentPlayer}
         isCurrentTurn={isMyTurn}
+        hideQualityTab={qualityTabHidden}
         onRecruit={handleRecruit}
         onRecruitComposition={handleRecruitComposition}
         onUpgrade={handleBaseUpgrade}
@@ -870,15 +1040,18 @@ export default function GamePage({
   );
 }
 
-function findCpuAttack(cpuPlayer: PlayerDoc, cpuArmies: ArmyDoc[], tiles: TileDoc[], armies: ArmyDoc[]) {
+function findCpuAttack(cpuPlayer: PlayerDoc, cpuArmies: ArmyDoc[], tiles: TileDoc[], armies: ArmyDoc[], roundNumber: number) {
   const targetTiles = enemyTargetTiles(cpuPlayer.id, tiles, armies);
   for (const army of cpuArmies.filter((candidate) => !candidate.hasActedThisTurn)) {
     const fromTile = tiles.find((tile) => tile.id === army.tileId);
     if (!fromTile) continue;
     const targetTile = [...targetTiles]
-      .filter((tile) => canAttackTile(army, fromTile, tile, cpuPlayer.id, tiles))
+      .filter((tile) => canAttackTile(army, fromTile, tile, cpuPlayer.id, tiles, roundNumber))
       .sort((a, b) => cpuAttackTargetScore(a, fromTile) - cpuAttackTargetScore(b, fromTile))[0];
-    if (targetTile) return { army, fromTile, targetTile };
+    if (targetTile) {
+      const defenderArmy = targetTile.armyId ? armies.find((candidate) => candidate.id === targetTile.armyId) ?? null : null;
+      return { army, fromTile, targetTile, defenderArmy };
+    }
   }
   return null;
 }
@@ -951,8 +1124,9 @@ function chooseCpuEconomicAction(cpuPlayer: PlayerDoc, tiles: TileDoc[], armies:
   const recruitAction = chooseCpuRecruitAction(cpuPlayer, friendlyBases, tiles, armies);
   if (recruitAction) return recruitAction;
 
+  const maxBaseOffenseLevel = Math.max(...UPGRADE_CONFIG.baseOffense.map((entry) => entry.level));
   const offenseBase = friendlyBases
-    .filter((tile) => tile.base && (tile.base.offenseLevel ?? 1) < 3)
+    .filter((tile) => tile.base && (tile.base.offenseLevel ?? 1) < maxBaseOffenseLevel)
     .sort((a, b) => cpuBasePressureScore(a, cpuPlayer.id, tiles) - cpuBasePressureScore(b, cpuPlayer.id, tiles))
     .find((tile) => {
       const nextLevel = (tile.base?.offenseLevel ?? 1) + 1;
@@ -963,8 +1137,9 @@ function chooseCpuEconomicAction(cpuPlayer: PlayerDoc, tiles: TileDoc[], armies:
 
   if (barracksBase) return { kind: 'upgradeBarracks', tile: barracksBase };
 
+  const maxBaseDefenseLevel = Math.max(...UPGRADE_CONFIG.baseDefense.map((entry) => entry.level));
   const defenseBase = friendlyBases
-    .filter((tile) => tile.base && tile.base.defenseLevel < 3)
+    .filter((tile) => tile.base && tile.base.defenseLevel < maxBaseDefenseLevel)
     .sort((a, b) => cpuBasePressureScore(a, cpuPlayer.id, tiles) - cpuBasePressureScore(b, cpuPlayer.id, tiles))
     .find((tile) => {
       const nextLevel = (tile.base?.defenseLevel ?? 1) + 1;
@@ -985,8 +1160,8 @@ function chooseCpuRecruitAction(
   const builderCount = armies.filter((army) => army.ownerId === cpuPlayer.id && army.units.length === 1 && army.units[0].typeId === 'builder').length;
   const wantsMoreBuilders = builderCount < Math.max(2, Math.min(3, friendlyBases.length));
   const recruitPriority: UnitTypeId[] = wantsMoreBuilders
-    ? ['builder', 'tank', 'artillery', 'antiVehicle', 'sniper', 'gunman', 'medic', 'recon']
-    : ['tank', 'artillery', 'antiVehicle', 'sniper', 'gunman', 'medic', 'builder', 'recon'];
+    ? ['builder', 'tank', 'lightArtillery', 'smokeArtillery', 'siegeArtillery', 'antiVehicle', 'sniper', 'gunman', 'medic', 'recon']
+    : ['tank', 'lightArtillery', 'smokeArtillery', 'siegeArtillery', 'antiVehicle', 'sniper', 'gunman', 'medic', 'builder', 'recon'];
 
   for (const baseTile of [...friendlyBases].sort(
     (a, b) => cpuBasePressureScore(a, cpuPlayer.id, tiles) - cpuBasePressureScore(b, cpuPlayer.id, tiles),
@@ -998,7 +1173,7 @@ function chooseCpuRecruitAction(
     for (const unitTypeId of recruitPriority) {
       const requiredLevel = UPGRADE_CONFIG.barracks.find((entry) => entry.unlocks.includes(unitTypeId))?.level ?? 1;
       if (sharedBarracksLevel < requiredLevel) continue;
-      if ((unitTypeId === 'artillery' || unitTypeId === 'recon' || unitTypeId === 'builder') && spawnSpace < 1) continue;
+      if ((ARTILLERY_UNIT_TYPES.has(unitTypeId) || unitTypeId === 'recon' || unitTypeId === 'builder') && spawnSpace < 1) continue;
       const unitCost = UNIT_TYPES[unitTypeId].cost;
       if (cpuPlayer.supplies < unitCost) continue;
       if (unitTypeId === 'builder' && !wantsMoreBuilders) continue;
@@ -1117,6 +1292,14 @@ function adjacentPassableSpawnCount(baseTile: TileDoc, tiles: TileDoc[], armies:
   return tiles.filter((tile) => manhattanDistance(baseTile, tile) === 1 && !isImpassableTerrain(tile) && !armiesByTile.has(tile.id)).length;
 }
 
+function smokeAreaTiles(originTile: TileDoc, tiles: TileDoc[]) {
+  return tiles.filter(
+    (tile) =>
+      (tile.x === originTile.x || tile.x === originTile.x + 1) &&
+      (tile.y === originTile.y || tile.y === originTile.y + 1),
+  );
+}
+
 function reclaimBaseCost(base: NonNullable<TileDoc['base']>) {
   return 50 + Math.ceil(totalBaseUpgradeInvestment(base) * 0.5);
 }
@@ -1189,7 +1372,9 @@ function playMovementSound(tileCount: number, mode: MovementSoundMode, durationM
 
 function playUiSound(path: string, volume: number) {
   const sound = new Audio(path);
-  sound.volume = volume;
+  const savedVfxVolume = Number(localStorage.getItem('vfxVolume'));
+  const vfxVolume = Number.isFinite(savedVfxVolume) ? Math.min(1, Math.max(0, savedVfxVolume)) : 0.75;
+  sound.volume = volume * vfxVolume;
   sound.play().catch(() => {
     // The file may not be present yet, or the browser may block audio.
   });

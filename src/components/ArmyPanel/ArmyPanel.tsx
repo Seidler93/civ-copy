@@ -101,7 +101,9 @@ export default function ArmyPanel({
                 <div className="unit-row-heading">
                   <strong>{UNIT_TYPES[unit.typeId].name}</strong>
                   <div className="unit-row-controls">
-                    <span className="unit-level-badge">L{unit.level ?? 1}</span>
+                    <span className="unit-level-badge" title={`Level ${unit.level ?? 1}`} aria-label={`Level ${unit.level ?? 1}`}>
+                      LVL {unit.level ?? 1}
+                    </span>
                     {(canSeparateFromArmy || canDismissFromArmy) && (
                       <>
                         <button

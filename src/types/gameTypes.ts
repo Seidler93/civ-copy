@@ -1,7 +1,18 @@
 export type GameStatus = 'lobby' | 'active' | 'finished';
 export type GameMode = 'turn-based' | 'timed-simultaneous';
 export type TerrainType = 'plains' | 'forest' | 'hill' | 'water' | 'mountain';
-export type UnitTypeId = 'gunman' | 'recon' | 'sniper' | 'tank' | 'antiVehicle' | 'builder' | 'medic' | 'artillery';
+export type UnitTypeId =
+  | 'gunman'
+  | 'recon'
+  | 'sniper'
+  | 'tank'
+  | 'antiVehicle'
+  | 'builder'
+  | 'medic'
+  | 'artillery'
+  | 'lightArtillery'
+  | 'smokeArtillery'
+  | 'siegeArtillery';
 export type MoveDirection = 'north' | 'east' | 'south' | 'west';
 export type MoveOrderMode = 'aggressive' | 'passive';
 export type VictoryReason = 'elimination' | 'turn-limit' | 'host-ended';
@@ -19,6 +30,8 @@ export interface GameDoc {
   code: string;
   hostPlayerId: string;
   status: GameStatus;
+  isPaused?: boolean;
+  pausedAtMs?: number | null;
   mapId?: string;
   mapName?: string;
   mode: GameMode;
@@ -81,6 +94,11 @@ export interface TrenchState {
   ownerId: string;
 }
 
+export interface SmokeState {
+  ownerId: string;
+  expiresRound: number;
+}
+
 export interface TileDoc {
   id: string;
   x: number;
@@ -91,6 +109,7 @@ export interface TileDoc {
   base: BaseState | null;
   mine: MineState | null;
   trench?: TrenchState | null;
+  smoke?: SmokeState | null;
 }
 
 export interface UnitInstance {
@@ -103,6 +122,8 @@ export interface UnitInstance {
   xp: number;
   maxHealth: number;
   currentHealth: number;
+  artilleryReloadUntilRound?: number;
+  smokeReloadUntilRound?: number;
 }
 
 export interface ArmyDoc {
@@ -164,5 +185,10 @@ export interface MoveOutcome {
   armyDestroyed: boolean;
   triggeredMineTileId?: string;
   mineDamage?: number;
+  sentryBaseTileId?: string;
+  sentryTriggerTileId?: string;
   sentryDamage?: number;
+  sentryReturnFirePower?: number;
+  sentryBaseDestroyed?: boolean;
+  debugLines?: string[];
 }

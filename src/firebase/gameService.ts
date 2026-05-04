@@ -18,7 +18,7 @@ import { signInAnonymously, type User } from 'firebase/auth';
 import { auth, db } from './firebaseConfig';
 import { UNIT_TYPES } from '../data/unitTypes';
 import { UNIT_COMPOSITIONS } from '../data/unitCompositions';
-import { BUILD_BASE_COST, UPGRADE_CONFIG } from '../data/upgradeConfig';
+import { BUILD_BASE_COST, BUILD_TRENCH_COST, UPGRADE_CONFIG } from '../data/upgradeConfig';
 import { previousTalentInBranch, talentById } from '../data/talentConfig';
 import type {
   ArmyDoc,
@@ -56,7 +56,7 @@ import {
   resolveCombat,
 } from '../utils/combat';
 import { suppliesFromBases } from '../utils/economy';
-import { effectiveBarracksLevel } from '../utils/trenchNetwork';
+import { effectiveBarracksLevel, effectiveUnitQualityLevel } from '../utils/trenchNetwork';
 import { visibleTileIdsForPlayer } from '../utils/vision';
 import {
   armyMustStaySolo,
@@ -66,14 +66,20 @@ import {
   canCombineArmies,
   canMoveArmy,
   canAttackTile,
+  isTileInAttackRange,
+  ARTILLERY_UNIT_TYPES,
   chebyshevDistance,
   hasLineOfSight,
+  isNormalArtilleryArmy,
   isSoloArtilleryArmy,
+  isActiveBaseTile,
   isImpassableTerrain,
   manhattanDistance,
   movementAllowance,
   movementCost,
   movementPath,
+  NORMAL_ARTILLERY_RELOAD_ROUNDS,
+  NORMAL_ARTILLERY_UNIT_TYPES,
   tileIdFromCoords,
 } from '../utils/movement';
 import { applyXp } from '../utils/xp';
@@ -123,6 +129,9 @@ const DEFAULT_MAP_TEMPLATE = MAP_TEMPLATES['classic-front'];
 export const MAX_DEPLOYED_UNITS = 50;
 export const DISMISS_UNIT_MIN_COST = 3;
 export const DISMISS_UNIT_COST_RATE = 0.25;
+export const SMOKE_SCREEN_ATTACK_MULTIPLIER = 0.75;
+export const SMOKE_SCREEN_DURATION_ROUNDS = 3;
+export const SMOKE_SCREEN_RELOAD_ROUNDS = 2;
 const XP_END_TURN = 5;
 const XP_PER_BASE_AT_TURN_END = 3;
 const XP_ATTACK = 5;
@@ -144,6 +153,7 @@ const MEDIC_PASSIVE_HEAL = 4;
 const MEDIC_ACTIVE_HEAL = 16;
 const ANTI_VEHICLE_MINE_DAMAGE = 30;
 const LOGISTICS_SCAVENGE_SUPPLIES = 20;
+const QUALITY_HEALTH_BONUS_PER_LEVEL = 2;
 const BASE_AURA_DEFENSE_BONUS = 2;
 const TRENCH_ATTACK_BONUS = 2;
 const TRENCH_DEFENSE_BONUS = 2;
@@ -181,6 +191,8 @@ export async function createGame(playerName: string, setup: GameSetupOptions = D
     code,
     hostPlayerId: user.uid,
     status: 'lobby',
+    isPaused: false,
+    pausedAtMs: null,
     mapId: DEFAULT_MAP_TEMPLATE.id,
     mapName: DEFAULT_MAP_TEMPLATE.name,
     mode: normalizedSetup.mode,
@@ -228,6 +240,8 @@ export async function createDevSoloGame() {
     code: 'SOLO',
     hostPlayerId: `solo_${user.uid}_one`,
     status: 'active',
+    isPaused: false,
+    pausedAtMs: null,
     mapId: DEFAULT_MAP_TEMPLATE.id,
     mapName: DEFAULT_MAP_TEMPLATE.name,
     mode: 'turn-based',
@@ -601,6 +615,8 @@ export async function resetGameToLobby(gameId: string, playerId: string) {
   });
   batch.update(gameRef, {
     status: 'lobby',
+    isPaused: false,
+    pausedAtMs: null,
     winnerPlayerId: null,
     victoryReason: null,
     currentTurnPlayerId: null,
@@ -610,6 +626,30 @@ export async function resetGameToLobby(gameId: string, playerId: string) {
   });
 
   await batch.commit();
+}
+
+export async function setGamePaused(gameId: string, playerId: string, isPaused: boolean) {
+  const gameRef = doc(db, 'games', gameId);
+  const gameSnapshot = await getDoc(gameRef);
+  const game = gameSnapshot.exists() ? ({ id: gameSnapshot.id, ...gameSnapshot.data() } as GameDoc) : null;
+  if (!game || game.hostPlayerId !== playerId) throw new Error('Only the host can pause gameplay.');
+  if (game.status !== 'active') throw new Error('Only active games can be paused.');
+
+  const now = Date.now();
+  const pausedAtMs = game.pausedAtMs ?? now;
+  const pauseDurationMs = game.isPaused && !isPaused ? now - pausedAtMs : 0;
+  await setDoc(
+    gameRef,
+    {
+      isPaused,
+      pausedAtMs: isPaused ? now : null,
+      roundEndsAtMs:
+        !isPaused && game.roundEndsAtMs && pauseDurationMs > 0 ? game.roundEndsAtMs + pauseDurationMs : game.roundEndsAtMs ?? null,
+    },
+    { merge: true },
+  );
+
+  return isPaused ? 'Gameplay paused. Players can inspect the map, but actions are locked.' : 'Gameplay resumed.';
 }
 
 export async function backOutOfGame(gameId: string, playerId: string) {
@@ -648,6 +688,7 @@ export async function backOutOfGame(gameId: string, playerId: string) {
     }
     if (tile.mine?.ownerId === playerId) updates.mine = null;
     if (tile.trench?.ownerId === playerId) updates.trench = null;
+    if (tile.smoke?.ownerId === playerId) updates.smoke = null;
     if (Object.keys(updates).length > 0) batch.update(tileDoc.ref, updates);
   });
 
@@ -719,42 +760,45 @@ export async function moveArmy(gameId: string, armyId: string, targetTileId: str
     if ((army.fortifyTurnsRemaining ?? 0) > 0) throw new Error('This unit is fortified and cannot move.');
     if (!canMoveArmy(army, fromTile, targetTile, player, tiles, armies)) throw new Error('That move is not allowed.');
     const moveCost = movementCost(fromTile, targetTile, tiles, { armies, passThroughOwnerId: army.ownerId }) ?? 0;
-    const mineDamage = targetTile.mine?.damage ?? ANTI_VEHICLE_MINE_DAMAGE;
-    const mineTriggers = Boolean(
-      targetTile.mine &&
-        targetTile.mine.ownerId !== playerId &&
-        army.units.some((unit) => unit.typeId === 'tank'),
-    );
+    const path = movementPath(fromTile, targetTile, tiles, { armies, passThroughOwnerId: army.ownerId }) ?? [];
+    const triggeredMineTile = triggeredMineTileForPath(path, playerId, army);
+    const mineDamage = triggeredMineTile?.mine?.damage ?? ANTI_VEHICLE_MINE_DAMAGE;
+    const mineTriggers = Boolean(triggeredMineTile);
     const movedUnits = mineTriggers ? damageTankUnits(army.units, mineDamage) : army.units;
-    const sentryAttacks =
-      movedUnits.length > 0
-        ? tiles
-            .filter((tile) => tile.base && tile.base.ownerId !== playerId)
-            .map((tile) => {
-              const offenseConfig = UPGRADE_CONFIG.baseOffense.find((level) => level.level === (tile.base!.offenseLevel ?? 1));
-              return { tile, offenseConfig };
-            })
-            .filter(
-              (entry): entry is {
-                tile: TileDoc;
-                offenseConfig: (typeof UPGRADE_CONFIG.baseOffense)[number];
-              } =>
-                Boolean(
-                  entry.offenseConfig &&
-                    entry.offenseConfig.damage > 0 &&
-                    chebyshevDistance(entry.tile, targetTile) <= entry.offenseConfig.range &&
-                    hasLineOfSight(entry.tile, targetTile, tiles),
-                ),
-            )
-        : [];
-    const sentryLosses = sentryAttacks.reduce((total, entry) => total + entry.offenseConfig.damage, 0);
-    const sentryDamage = sentryLosses * 10;
-    const finalUnits = sentryLosses > 0 ? removeUnitLosses(movedUnits, sentryLosses, 'defender') : movedUnits;
+    const sentryExchange = resolveSentryMoveExchange(game, player, army, path, movedUnits, tiles);
+    const sentryAttack = sentryExchange.sentryAttack;
+    const sentryDamage = sentryExchange.sentryDamage;
+    const finalUnits = sentryExchange.finalUnits;
     const unitsLost = Math.max(0, army.units.length - finalUnits.length);
     const lastMoveDirection = directionFromTiles(fromTile, targetTile);
+    const debugLines = movementDebugLines({
+      fromTile,
+      targetTile,
+      path,
+      army,
+      triggeredMineTile,
+      mineTriggers,
+      mineDamage,
+      sentryAttack,
+      sentryDamage,
+      sentryTriggerTile: sentryExchange.triggerTile,
+      sentryReturnFirePower: sentryExchange.returnFirePower,
+      sentryBaseDestroyed: sentryExchange.baseDestroyed,
+      unitsLost,
+    });
     const nextTiles = tiles.map((tile) => {
       if (tile.id === fromTile.id) return { ...tile, armyId: null };
-      if (tile.id === targetTile.id) return { ...tile, armyId: finalUnits.length > 0 ? armyId : null, mine: mineTriggers ? null : tile.mine };
+      if (tile.id === targetTile.id) {
+        return {
+          ...tile,
+          armyId: finalUnits.length > 0 ? armyId : null,
+          mine: triggeredMineTile?.id === tile.id ? null : tile.mine,
+        };
+      }
+      if (triggeredMineTile?.id === tile.id) return { ...tile, mine: null };
+      if (sentryExchange.baseDestroyed && sentryAttack?.tile.id === tile.id) {
+        return { ...tile, base: ruinBase(tile.base), ownerId: null };
+      }
       return tile;
     });
     const nextArmies =
@@ -768,28 +812,45 @@ export async function moveArmy(gameId: string, armyId: string, targetTileId: str
     const nextExploredTileIds = exploredTileIdsFor(player, nextTiles, nextArmies);
 
     transaction.update(fromTileRef, { armyId: null });
+    const triggeredMineRef =
+      triggeredMineTile && triggeredMineTile.id !== targetTile.id
+        ? doc(db, 'games', gameId, 'tiles', triggeredMineTile.id)
+        : null;
+    if (triggeredMineRef) transaction.update(triggeredMineRef, { mine: null });
+    if (sentryExchange.baseDestroyed && sentryAttack) {
+      transaction.update(doc(db, 'games', gameId, 'tiles', sentryAttack.tile.id), {
+        base: ruinBase(sentryAttack.tile.base),
+        ownerId: null,
+      });
+    }
     if (movedUnits.length === 0 || finalUnits.length === 0) {
-      transaction.update(targetTileRef, { armyId: null, mine: mineTriggers ? null : targetTile.mine });
+      transaction.update(targetTileRef, { armyId: null, mine: triggeredMineTile?.id === targetTile.id ? null : targetTile.mine });
       transaction.delete(armyRef);
       transaction.update(playerRef, { exploredTileIds: nextExploredTileIds, stats: mergedPlayerStats(player, { unitsLost }) });
       if (movedUnits.length > 0 && sentryDamage > 0) {
         return {
           message: `Unit moved to ${targetTile.x}, ${targetTile.y} and was destroyed by base sentry fire for ${sentryDamage} damage.`,
           armyDestroyed: true,
-          triggeredMineTileId: mineTriggers ? targetTile.id : undefined,
+          triggeredMineTileId: triggeredMineTile?.id,
           mineDamage: mineTriggers ? mineDamage : undefined,
+          sentryBaseTileId: sentryAttack?.tile.id,
+          sentryTriggerTileId: sentryExchange.triggerTile?.id,
           sentryDamage,
+          sentryReturnFirePower: sentryExchange.returnFirePower,
+          sentryBaseDestroyed: sentryExchange.baseDestroyed,
+          debugLines,
         };
       }
       return {
-        message: `Unit hit an anti-vehicle mine at ${targetTile.x}, ${targetTile.y} and was destroyed.`,
+        message: `Unit hit an anti-vehicle mine at ${triggeredMineTile?.x ?? targetTile.x}, ${triggeredMineTile?.y ?? targetTile.y} and was destroyed.`,
         armyDestroyed: true,
-        triggeredMineTileId: targetTile.id,
+        triggeredMineTileId: triggeredMineTile?.id,
         mineDamage: mineTriggers ? mineDamage : undefined,
+        debugLines,
       };
     }
 
-    transaction.update(targetTileRef, { armyId, mine: mineTriggers ? null : targetTile.mine });
+    transaction.update(targetTileRef, { armyId, mine: triggeredMineTile?.id === targetTile.id ? null : targetTile.mine });
     transaction.update(armyRef, {
       tileId: targetTileId,
       units: finalUnits,
@@ -804,12 +865,22 @@ export async function moveArmy(gameId: string, armyId: string, targetTileId: str
     return {
       message:
         `Unit moved to ${targetTile.x}, ${targetTile.y}.` +
-        (mineTriggers ? ` Tank hit a mine for ${mineDamage} damage.` : '') +
-        (sentryDamage > 0 ? ` Base sentry fire dealt ${sentryDamage} damage.` : ''),
+        (mineTriggers ? ` Tank crossed a mine at ${triggeredMineTile?.x}, ${triggeredMineTile?.y} for ${mineDamage} damage.` : '') +
+        (sentryDamage > 0
+          ? ` Base sentry at ${sentryAttack?.tile.x}, ${sentryAttack?.tile.y} dealt ${sentryDamage} damage.`
+          : '') +
+        (sentryExchange.returnFirePower > 0
+          ? ` Unit returned fire with ${sentryExchange.returnFirePower} attack power${sentryExchange.baseDestroyed ? ' and destroyed the base' : ''}.`
+          : ''),
       armyDestroyed: false,
-      triggeredMineTileId: mineTriggers ? targetTile.id : undefined,
+      triggeredMineTileId: triggeredMineTile?.id,
       mineDamage: mineTriggers ? mineDamage : undefined,
+      sentryBaseTileId: sentryAttack?.tile.id,
+      sentryTriggerTileId: sentryExchange.triggerTile?.id,
       sentryDamage: sentryDamage > 0 ? sentryDamage : undefined,
+      sentryReturnFirePower: sentryExchange.returnFirePower > 0 ? sentryExchange.returnFirePower : undefined,
+      sentryBaseDestroyed: sentryExchange.baseDestroyed || undefined,
+      debugLines,
     };
   });
 }
@@ -1107,7 +1178,11 @@ export async function attackTile(gameId: string, attackerArmyId: string, targetT
     const allTiles = allTilesSnapshot.docs.map((tileDoc) => ({ id: tileDoc.id, ...tileDoc.data() }) as TileDoc);
     const supportArmiesSnapshot = await getDocs(collection(db, 'games', gameId, 'armies'));
     const supportArmies = supportArmiesSnapshot.docs.map((armyDoc) => ({ id: armyDoc.id, ...armyDoc.data() }) as ArmyDoc);
-    if (!canAttackTile(attacker, fromTile, targetTile, playerId, allTiles)) {
+    const normalArtilleryReloadUntilRound = isNormalArtilleryArmy(attacker) ? attacker.units[0].artilleryReloadUntilRound ?? 0 : 0;
+    if (normalArtilleryReloadUntilRound > game.roundNumber) {
+      throw new Error(`Artillery is reloading until round ${normalArtilleryReloadUntilRound}.`);
+    }
+    if (!canAttackTile(attacker, fromTile, targetTile, playerId, allTiles, game.roundNumber)) {
       throw new Error(
         isSoloArtilleryArmy(attacker)
           ? 'Target is out of artillery range or line of sight.'
@@ -1115,7 +1190,8 @@ export async function attackTile(gameId: string, attackerArmyId: string, targetT
       );
     }
 
-    const isRangedArtilleryAttack = isSoloArtilleryArmy(attacker) && chebyshevDistance(fromTile, targetTile) > 1;
+    const defenderCanReturnFire = Boolean(defender && isTileInAttackRange(defender, targetTile, fromTile, allTiles));
+    const isRangedArtilleryAttack = isSoloArtilleryArmy(attacker) && chebyshevDistance(fromTile, targetTile) > 1 && !defenderCanReturnFire;
     const supportedByAdjacentArmy = supportArmies.some((supportArmy) => {
       if (supportArmy.id === attacker.id || supportArmy.ownerId !== playerId) return false;
       const supportTile = allTiles.find((tile) => tile.id === supportArmy.tileId);
@@ -1142,16 +1218,19 @@ export async function attackTile(gameId: string, attackerArmyId: string, targetT
     const siegeColumnBonus = defendingBase && hasSiegeColumn(attacker.units) ? 0.2 : 0;
     const fortifyAttackPenalty = (attacker.fortifyTurnsRemaining ?? 0) > 0 ? FORTIFY_ATTACK_MULTIPLIER : 1;
     const fortifyDefenseBonus = defender && (defender.fortifyTurnsRemaining ?? 0) > 0 ? FORTIFY_DEFENSE_MULTIPLIER : 1;
+    const artilleryFlatBonus = artilleryAttackFlatBonus(attacker, defender, defendingBase, targetTile);
+    const smokeAttackMultiplier = activeSmokeOnTile(fromTile, game.roundNumber) ? SMOKE_SCREEN_ATTACK_MULTIPLIER : 1;
     const resolvedCombat = resolveCombat(
       attacker.units,
       defender?.units ?? [],
       targetTile.terrainType,
       defendingBase,
       (1 + attackTalentBonus + supportTalentBonus + attackerCombinedArmsBonus + tankHunterBonus + siegeColumnBonus) *
-        fortifyAttackPenalty,
+        fortifyAttackPenalty *
+        smokeAttackMultiplier,
       (1 + defenseTalentBonus + defenderCombinedArmsBonus + entrenchedInfantryBonus) * fortifyDefenseBonus,
       baseTalentDefenseBonus + baseAuraDefenseBonus + trenchDefenseBonus,
-      trenchAttackBonus,
+      trenchAttackBonus + artilleryFlatBonus,
     );
     const combat = isRangedArtilleryAttack ? { ...resolvedCombat, attackerLosses: 0 } : resolvedCombat;
     const remainingAttackers = removeUnitLosses(attacker.units, combat.attackerLosses, 'attacker');
@@ -1172,7 +1251,7 @@ export async function attackTile(gameId: string, attackerArmyId: string, targetT
     const unitXpGained =
       combat.defenderLosses * UNIT_XP_DESTROY_UNIT +
       (defender && remainingDefenders.length === 0 ? UNIT_XP_DESTROY_ARMY : 0);
-    const leveledAttackers = applyUnitXp(remainingAttackers, unitXpGained);
+    const leveledAttackers = applyNormalArtilleryReload(applyUnitXp(remainingAttackers, unitXpGained), attacker, game.roundNumber);
 
     if (remainingAttackers.length === 0) {
       transaction.delete(attackerRef);
@@ -1358,16 +1437,30 @@ export async function recruitUnitAtBase(gameId: string, baseTileId: string, unit
     const spawnTarget = deployTiles
       .filter((entry): entry is { ref: ReturnType<typeof doc>; tile: TileDoc } => entry !== null)
       .find(({ tile }) => !tile.armyId);
+    const cornerTiles = spawnTarget
+      ? []
+      : await Promise.all(
+          getCornerTileIds(baseTile, game.mapWidth, game.mapHeight).map(async (tileId) => {
+            const tileRef = doc(db, 'games', gameId, 'tiles', tileId);
+            const tileSnap = await transaction.get(tileRef);
+            return tileSnap.exists() ? ({ ref: tileRef, tile: { id: tileSnap.id, ...tileSnap.data() } as TileDoc }) : null;
+          }),
+        );
+    const cornerSpawnTarget = cornerTiles
+      .filter((entry): entry is { ref: ReturnType<typeof doc>; tile: TileDoc } => entry !== null && !isImpassableTerrain(entry.tile))
+      .find(({ tile }) => !tile.armyId);
 
-    const qualityLevel = baseTile.base.unitQualityByType?.[unitTypeId] ?? baseTile.base.unitQualityLevel ?? 1;
+    const qualityLevel = effectiveUnitQualityLevel(baseTile, unitTypeId, effectiveBaseTiles, allArmies);
     const qualityBonus = Math.max(0, qualityLevel - 1);
     const newUnit = makeUnit(unitTypeId, qualityBonus);
 
-    if (spawnTarget) {
+    const finalSpawnTarget = spawnTarget ?? cornerSpawnTarget;
+
+    if (finalSpawnTarget) {
       const armyRef = doc(collection(db, 'games', gameId, 'armies'));
       transaction.set(armyRef, {
         ownerId: playerId,
-        tileId: spawnTarget.tile.id,
+        tileId: finalSpawnTarget.tile.id,
         units: [newUnit],
         hasMovedThisTurn: false,
         hasActedThisTurn: false,
@@ -1375,8 +1468,8 @@ export async function recruitUnitAtBase(gameId: string, baseTileId: string, unit
         queuedMoveTileId: null,
         queuedMoveMode: null,
       });
-      transaction.update(spawnTarget.ref, { armyId: armyRef.id });
-    } else if (unitTypeId === 'builder' || unitTypeId === 'artillery' || unitTypeId === 'recon') {
+      transaction.update(finalSpawnTarget.ref, { armyId: armyRef.id });
+    } else if (unitTypeId === 'builder' || unitTypeId === 'recon' || ARTILLERY_UNIT_TYPES.has(unitTypeId)) {
       throw new Error('No space to deploy.');
     } else {
       const adjacentArmyEntries = await Promise.all(
@@ -1452,7 +1545,7 @@ export async function recruitUnitCompositionAtBase(
     const lockedUnit = composition.units.find((unitTypeId) => !isUnitUnlocked(unitTypeId, sharedBarracksLevel));
     if (lockedUnit) throw new Error(`${UNIT_TYPES[lockedUnit].name} is not unlocked here.`);
 
-    const soloOnlyUnit = composition.units.find((unitTypeId) => unitTypeId === 'builder' || unitTypeId === 'recon' || unitTypeId === 'artillery');
+    const soloOnlyUnit = composition.units.find((unitTypeId) => unitTypeId === 'builder' || unitTypeId === 'recon' || ARTILLERY_UNIT_TYPES.has(unitTypeId));
     if (soloOnlyUnit) throw new Error(`${UNIT_TYPES[soloOnlyUnit].name} must operate solo.`);
 
     const totalSpace = composition.units.reduce((total, unitTypeId) => total + UNIT_TYPES[unitTypeId].space, 0);
@@ -1478,16 +1571,29 @@ export async function recruitUnitCompositionAtBase(
     const spawnTarget = neighborTiles
       .filter((entry): entry is { ref: ReturnType<typeof doc>; tile: TileDoc } => entry !== null)
       .find(({ tile }) => !tile.armyId && !isImpassableTerrain(tile));
-    if (!spawnTarget) throw new Error('No space to deploy.');
+    const cornerTiles = spawnTarget
+      ? []
+      : await Promise.all(
+          getCornerTileIds(baseTile, game.mapWidth, game.mapHeight).map(async (tileId) => {
+            const tileRef = doc(db, 'games', gameId, 'tiles', tileId);
+            const tileSnap = await transaction.get(tileRef);
+            return tileSnap.exists() ? ({ ref: tileRef, tile: { id: tileSnap.id, ...tileSnap.data() } as TileDoc }) : null;
+          }),
+        );
+    const cornerSpawnTarget = cornerTiles
+      .filter((entry): entry is { ref: ReturnType<typeof doc>; tile: TileDoc } => entry !== null)
+      .find(({ tile }) => !tile.armyId && !isImpassableTerrain(tile));
+    const finalSpawnTarget = spawnTarget ?? cornerSpawnTarget;
+    if (!finalSpawnTarget) throw new Error('No space to deploy.');
 
     const newUnits = composition.units.map((unitTypeId) => {
-      const qualityLevel = baseTile.base!.unitQualityByType?.[unitTypeId] ?? baseTile.base!.unitQualityLevel ?? 1;
+      const qualityLevel = effectiveUnitQualityLevel(baseTile, unitTypeId, effectiveBaseTiles, allArmies);
       return makeUnit(unitTypeId, Math.max(0, qualityLevel - 1));
     });
     const armyRef = doc(collection(db, 'games', gameId, 'armies'));
     transaction.set(armyRef, {
       ownerId: playerId,
-      tileId: spawnTarget.tile.id,
+      tileId: finalSpawnTarget.tile.id,
       units: newUnits,
       hasMovedThisTurn: false,
       hasActedThisTurn: false,
@@ -1495,7 +1601,7 @@ export async function recruitUnitCompositionAtBase(
       queuedMoveTileId: null,
       queuedMoveMode: null,
     });
-    transaction.update(spawnTarget.ref, { armyId: armyRef.id });
+    transaction.update(finalSpawnTarget.ref, { armyId: armyRef.id });
     transaction.update(playerRef, {
       supplies: player.supplies - cost,
       stats: mergedPlayerStats(player, { unitsCreated: composition.units.length }),
@@ -1620,11 +1726,17 @@ export async function buildTrenchWithBuilder(gameId: string, builderArmyId: stri
   return runTransaction(db, async (transaction) => {
     const gameRef = doc(db, 'games', gameId);
     const builderArmyRef = doc(db, 'games', gameId, 'armies', builderArmyId);
-    const [gameSnap, builderArmySnap] = await Promise.all([transaction.get(gameRef), transaction.get(builderArmyRef)]);
-    if (!gameSnap.exists() || !builderArmySnap.exists()) throw new Error('Game state changed. Try again.');
+    const playerRef = doc(db, 'games', gameId, 'players', playerId);
+    const [gameSnap, builderArmySnap, playerSnap] = await Promise.all([
+      transaction.get(gameRef),
+      transaction.get(builderArmyRef),
+      transaction.get(playerRef),
+    ]);
+    if (!gameSnap.exists() || !builderArmySnap.exists() || !playerSnap.exists()) throw new Error('Game state changed. Try again.');
 
     const game = { id: gameSnap.id, ...gameSnap.data() } as GameDoc;
     const builderArmy = { id: builderArmySnap.id, ...builderArmySnap.data() } as ArmyDoc;
+    const player = { id: playerSnap.id, ...playerSnap.data() } as PlayerDoc;
     const tileRef = doc(db, 'games', gameId, 'tiles', builderArmy.tileId);
     const tileSnap = await transaction.get(tileRef);
     if (!tileSnap.exists()) throw new Error('Logistics tile is missing.');
@@ -1639,13 +1751,15 @@ export async function buildTrenchWithBuilder(gameId: string, builderArmyId: stri
     if (!canLogisticsBuildTrench(builderArmy)) throw new Error('Logistics needs to be L2 to build trenches.');
     if (tile.trench) throw new Error('There is already a trench on this tile.');
     if (isImpassableTerrain(tile)) throw new Error('You cannot build a trench on this terrain.');
+    if (player.supplies < BUILD_TRENCH_COST) throw new Error(`You need ${BUILD_TRENCH_COST} supplies to build a trench.`);
 
     transaction.update(tileRef, {
       trench: { ownerId: playerId },
     });
+    transaction.update(playerRef, { supplies: player.supplies - BUILD_TRENCH_COST });
     transaction.update(builderArmyRef, { hasActedThisTurn: true });
 
-    return `Logistics squad dug a trench. Units on this tile gain +${TRENCH_ATTACK_BONUS} attack and +${TRENCH_DEFENSE_BONUS} defense.`;
+    return `Logistics squad dug a trench for ${BUILD_TRENCH_COST} supplies. Units on this tile gain +${TRENCH_ATTACK_BONUS} attack and +${TRENCH_DEFENSE_BONUS} defense.`;
   });
 }
 
@@ -1740,6 +1854,63 @@ export async function placeMineWithAntiVehicle(gameId: string, armyId: string, p
     transaction.update(armyRef, { hasActedThisTurn: true });
 
     return `Anti-Vehicle squad placed a mine for ${ANTI_VEHICLE_MINE_DAMAGE} tank damage.`;
+  });
+}
+
+export async function deploySmokeScreen(gameId: string, armyId: string, targetTileId: string, playerId: string) {
+  return runTransaction(db, async (transaction) => {
+    const gameRef = doc(db, 'games', gameId);
+    const armyRef = doc(db, 'games', gameId, 'armies', armyId);
+    const targetTileRef = doc(db, 'games', gameId, 'tiles', targetTileId);
+    const [gameSnap, armySnap, targetTileSnap] = await Promise.all([
+      transaction.get(gameRef),
+      transaction.get(armyRef),
+      transaction.get(targetTileRef),
+    ]);
+    if (!gameSnap.exists() || !armySnap.exists() || !targetTileSnap.exists()) throw new Error('Game state changed. Try again.');
+
+    const game = { id: gameSnap.id, ...gameSnap.data() } as GameDoc;
+    const army = { id: armySnap.id, ...armySnap.data() } as ArmyDoc;
+    const targetTile = { id: targetTileSnap.id, ...targetTileSnap.data() } as TileDoc;
+    const fromTileRef = doc(db, 'games', gameId, 'tiles', army.tileId);
+    const fromTileSnap = await transaction.get(fromTileRef);
+    if (!fromTileSnap.exists()) throw new Error('Smoke Screen unit tile is missing.');
+    const fromTile = { id: fromTileSnap.id, ...fromTileSnap.data() } as TileDoc;
+    const allTilesSnapshot = await getDocs(collection(db, 'games', gameId, 'tiles'));
+    const allTiles = allTilesSnapshot.docs.map((tileDoc) => ({ id: tileDoc.id, ...tileDoc.data() }) as TileDoc);
+
+    if (!canPlayerActInGame(game, playerId)) throw new Error(actionUnavailableMessage(game, 'You can only deploy smoke during your turn.'));
+    if (army.ownerId !== playerId) throw new Error('You do not control that Smoke Screen squad.');
+    if (army.hasActedThisTurn) throw new Error('That unit has already acted this turn.');
+    if (army.units.length !== 1 || army.units[0].typeId !== 'smokeArtillery') {
+      throw new Error('Only a solo Smoke Screen squad can deploy smoke.');
+    }
+    const smokeUnit = army.units[0];
+    const smokeReloadUntilRound = smokeUnit.smokeReloadUntilRound ?? 0;
+    if (smokeReloadUntilRound > game.roundNumber) {
+      throw new Error(`Smoke Screen is reloading until round ${smokeReloadUntilRound}.`);
+    }
+    if (!isTileInAttackRange(army, fromTile, targetTile, allTiles)) {
+      throw new Error('Smoke target is out of range or line of sight.');
+    }
+
+    const smokeTiles = smokeAreaTiles(targetTile, allTiles);
+    if (smokeTiles.length === 0) throw new Error('No valid smoke tiles found.');
+    const expiresRound = game.roundNumber + SMOKE_SCREEN_DURATION_ROUNDS - 1;
+    const reloadUntilRound = game.roundNumber + SMOKE_SCREEN_RELOAD_ROUNDS;
+    smokeTiles.forEach((tile) => {
+      transaction.update(doc(db, 'games', gameId, 'tiles', tile.id), {
+        smoke: { ownerId: playerId, expiresRound },
+      });
+    });
+    transaction.update(armyRef, {
+      units: [{ ...smokeUnit, smokeReloadUntilRound: reloadUntilRound }],
+      hasActedThisTurn: true,
+      queuedMoveTileId: null,
+      queuedMoveMode: null,
+    });
+
+    return `Smoke Screen deployed over ${smokeTiles.length} tiles. Units in smoke have -25% attack until round ${expiresRound}. Reload ready round ${reloadUntilRound}.`;
   });
 }
 
@@ -1888,12 +2059,15 @@ export async function upgradeBaseUnitQuality(
 
 export async function spendTalentPoint(gameId: string, playerId: string, talentId: TalentId) {
   return runTransaction(db, async (transaction) => {
+    const gameRef = doc(db, 'games', gameId);
     const playerRef = doc(db, 'games', gameId, 'players', playerId);
-    const playerSnap = await transaction.get(playerRef);
-    if (!playerSnap.exists()) throw new Error('Player not found.');
+    const [gameSnap, playerSnap] = await Promise.all([transaction.get(gameRef), transaction.get(playerRef)]);
+    if (!gameSnap.exists() || !playerSnap.exists()) throw new Error('Player not found.');
 
+    const game = { id: gameSnap.id, ...gameSnap.data() } as GameDoc;
     const player = { id: playerSnap.id, ...playerSnap.data() } as PlayerDoc;
     const talent = talentById(talentId);
+    if (game.isPaused) throw new Error('Gameplay is paused. Skill points can be spent after the host resumes.');
     if (!talent) throw new Error('That talent does not exist.');
     if (player.talentPoints <= 0) throw new Error('You do not have any skill points.');
 
@@ -1920,6 +2094,7 @@ export async function endTurn(gameId: string, playerId: string) {
     const gameSnap = await transaction.get(gameRef);
     if (!gameSnap.exists()) throw new Error('Game not found.');
     const game = { id: gameSnap.id, ...gameSnap.data() } as GameDoc;
+    if (game.isPaused) throw new Error('Gameplay is paused. Turns can continue after the host resumes.');
     if (isSimultaneousGame(game)) throw new Error('Timed simultaneous games advance automatically each round.');
     if (game.currentTurnPlayerId !== playerId) throw new Error('It is not your turn.');
 
@@ -1985,6 +2160,14 @@ export async function endTurn(gameId: string, playerId: string) {
       }
       if (Object.keys(armyUpdates).length > 0) transaction.update(armyDoc.ref, armyUpdates);
     });
+    if (isRoundEnding) {
+      tilesSnapshot.docs.forEach((tileDoc) => {
+        const tile = { id: tileDoc.id, ...tileDoc.data() } as TileDoc;
+        if (tile.smoke && tile.smoke.expiresRound < nextRound) {
+          transaction.update(tileDoc.ref, { smoke: null });
+        }
+      });
+    }
     if (hasReachedTurnLimit) {
       const winner = determineWinnerByXp(projectedPlayers);
       transaction.update(gameRef, {
@@ -2009,6 +2192,7 @@ export async function advanceSimultaneousRound(gameId: string) {
     const game = { id: gameSnap.id, ...gameSnap.data() } as GameDoc;
     if (!isSimultaneousGame(game)) throw new Error('This game is not using timed simultaneous rounds.');
     if (game.status !== 'active') throw new Error('This game is not active.');
+    if (game.isPaused) throw new Error('Gameplay is paused. Rounds can advance after the host resumes.');
     if ((game.roundEndsAtMs ?? 0) > Date.now()) throw new Error('The current round is still in progress.');
 
     const playersSnapshot = await getDocs(query(collection(db, 'games', gameId, 'players'), orderBy('joinedAt')));
@@ -2142,6 +2326,7 @@ export async function advanceSimultaneousRound(gameId: string) {
         base: nextTile.base,
         mine: nextTile.mine ?? null,
         trench: nextTile.trench ?? null,
+        smoke: nextTile.smoke && nextTile.smoke.expiresRound >= game.roundNumber + 1 ? nextTile.smoke : null,
       });
     });
 
@@ -2169,6 +2354,7 @@ function processQueuedMoveOrders(game: GameDoc, players: PlayerDoc[], tiles: Til
     base: tile.base ? { ...tile.base, unitQualityByType: { ...(tile.base.unitQualityByType ?? {}) } } : null,
     mine: tile.mine ? { ...tile.mine } : null,
     trench: tile.trench ? { ...tile.trench } : null,
+    smoke: tile.smoke ? { ...tile.smoke } : null,
   }));
   const nextArmies = armies.map((army) => ({
     ...army,
@@ -2221,7 +2407,7 @@ function processQueuedMoveOrders(game: GameDoc, players: PlayerDoc[], tiles: Til
 
     const finalTile = resolveQueuedMoveDestination(path, player, army);
     if (finalTile) {
-      applyQueuedMove(army, startTile, finalTile, nextTiles, nextArmies, playerStatDeltas);
+      applyQueuedMove(game, player, army, startTile, finalTile, nextTiles, nextArmies, playerStatDeltas);
     }
 
     const currentTile = nextTiles.find((tile) => tile.id === army.tileId);
@@ -2266,7 +2452,7 @@ function tryResolveQueuedAttack(
 ) {
   if (army.hasActedThisTurn || army.units.length === 0) return false;
 
-  const targetTile = chooseQueuedAttackTarget(army, fromTile, player.id, tiles, armies);
+  const targetTile = chooseQueuedAttackTarget(army, fromTile, player.id, tiles, armies, game.roundNumber);
   if (!targetTile) return false;
 
   applyQueuedAttack(game, players, player, army, fromTile, targetTile, tiles, armies, playerRewards, playerStatDeltas);
@@ -2279,10 +2465,11 @@ function chooseQueuedAttackTarget(
   playerId: string,
   tiles: TileDoc[],
   armies: ArmyDoc[],
+  roundNumber: number,
 ) {
   const armiesById = new Map(armies.map((candidate) => [candidate.id, candidate]));
   return tiles
-    .filter((tile) => canAttackTile(army, fromTile, tile, playerId, tiles))
+    .filter((tile) => canAttackTile(army, fromTile, tile, playerId, tiles, roundNumber))
     .sort((a, b) => {
       const aArmy = a.armyId ? armiesById.get(a.armyId) : null;
       const bArmy = b.armyId ? armiesById.get(b.armyId) : null;
@@ -2296,11 +2483,13 @@ function resolveQueuedMoveDestination(path: TileDoc[], player: PlayerDoc, army: 
   const moveBudget = Math.max(0, movementAllowance(player, army) - (army.movementUsedThisTurn ?? 0));
   if (moveBudget <= 0) return null;
   const moveSlice = path.slice(0, moveBudget);
-  const movementWaypoints = moveSlice.filter((tile) => !tile.armyId);
+  const movementWaypoints = moveSlice.filter((tile) => !tile.armyId && !isActiveBaseTile(tile));
   return movementWaypoints[movementWaypoints.length - 1] ?? null;
 }
 
 function applyQueuedMove(
+  game: GameDoc,
+  player: PlayerDoc,
   army: ArmyDoc,
   fromTile: TileDoc,
   targetTile: TileDoc,
@@ -2309,35 +2498,22 @@ function applyQueuedMove(
   playerStatDeltas: Map<string, Partial<PlayerStats>>,
 ) {
   const moveCost = movementCost(fromTile, targetTile, tiles, { armies, passThroughOwnerId: army.ownerId }) ?? 0;
-  const mineDamage = targetTile.mine?.damage ?? ANTI_VEHICLE_MINE_DAMAGE;
-  const mineTriggers =
-    Boolean(targetTile.mine && targetTile.mine.ownerId !== army.ownerId) && army.units.some((unit) => unit.typeId === 'tank');
+  const path = movementPath(fromTile, targetTile, tiles, { armies, passThroughOwnerId: army.ownerId }) ?? [targetTile];
+  const triggeredMineTile = triggeredMineTileForPath(path, army.ownerId, army);
+  const mineDamage = triggeredMineTile?.mine?.damage ?? ANTI_VEHICLE_MINE_DAMAGE;
+  const mineTriggers = Boolean(triggeredMineTile);
   const movedUnits = mineTriggers ? damageTankUnits(army.units, mineDamage) : army.units;
-  const sentryAttacks =
-    movedUnits.length > 0
-      ? tiles
-          .filter((tile) => tile.base && !tile.base.ruined && tile.base.ownerId !== army.ownerId)
-          .map((tile) => {
-            const offenseConfig = UPGRADE_CONFIG.baseOffense.find((level) => level.level === (tile.base!.offenseLevel ?? 1));
-            return { tile, offenseConfig };
-          })
-          .filter(
-            (entry): entry is { tile: TileDoc; offenseConfig: (typeof UPGRADE_CONFIG.baseOffense)[number] } =>
-              Boolean(
-                entry.offenseConfig &&
-                  entry.offenseConfig.damage > 0 &&
-                  chebyshevDistance(entry.tile, targetTile) <= entry.offenseConfig.range &&
-                  hasLineOfSight(entry.tile, targetTile, tiles),
-              ),
-          )
-      : [];
-  const sentryLosses = sentryAttacks.reduce((total, entry) => total + entry.offenseConfig.damage, 0);
-  const finalUnits = sentryLosses > 0 ? removeUnitLosses(movedUnits, sentryLosses, 'defender') : movedUnits;
+  const sentryExchange = resolveSentryMoveExchange(game, player, army, path, movedUnits, tiles);
+  const finalUnits = sentryExchange.finalUnits;
   const unitsLost = Math.max(0, army.units.length - finalUnits.length);
   if (unitsLost > 0) addPlayerStatDelta(playerStatDeltas, army.ownerId, { unitsLost });
 
   fromTile.armyId = null;
-  if (mineTriggers) targetTile.mine = null;
+  if (triggeredMineTile) triggeredMineTile.mine = null;
+  if (sentryExchange.baseDestroyed && sentryExchange.sentryAttack) {
+    sentryExchange.sentryAttack.tile.base = ruinBase(sentryExchange.sentryAttack.tile.base);
+    sentryExchange.sentryAttack.tile.ownerId = null;
+  }
 
   if (finalUnits.length === 0) {
     targetTile.armyId = null;
@@ -2373,7 +2549,8 @@ function applyQueuedAttack(
   const defendingPlayer = defendingOwnerId ? players.find((candidate) => candidate.id === defendingOwnerId) ?? null : null;
   if (!defendingOwnerId) return;
 
-  const isRangedArtilleryAttack = isSoloArtilleryArmy(attacker) && chebyshevDistance(fromTile, targetTile) > 1;
+  const defenderCanReturnFire = Boolean(defender && isTileInAttackRange(defender, targetTile, fromTile, tiles));
+  const isRangedArtilleryAttack = isSoloArtilleryArmy(attacker) && chebyshevDistance(fromTile, targetTile) > 1 && !defenderCanReturnFire;
   const supportedByAdjacentArmy = armies.some((supportArmy) => {
     if (supportArmy.id === attacker.id || supportArmy.ownerId !== player.id) return false;
     const supportTile = tiles.find((tile) => tile.id === supportArmy.tileId);
@@ -2396,16 +2573,19 @@ function applyQueuedAttack(
   const siegeColumnBonus = defendingBase && hasSiegeColumn(attacker.units) ? 0.2 : 0;
   const fortifyAttackPenalty = (attacker.fortifyTurnsRemaining ?? 0) > 0 ? FORTIFY_ATTACK_MULTIPLIER : 1;
   const fortifyDefenseBonus = defender && (defender.fortifyTurnsRemaining ?? 0) > 0 ? FORTIFY_DEFENSE_MULTIPLIER : 1;
+  const artilleryFlatBonus = artilleryAttackFlatBonus(attacker, defender, defendingBase, targetTile);
+  const smokeAttackMultiplier = activeSmokeOnTile(fromTile, game.roundNumber) ? SMOKE_SCREEN_ATTACK_MULTIPLIER : 1;
   const resolvedCombat = resolveCombat(
     attacker.units,
     defender?.units ?? [],
     targetTile.terrainType,
     defendingBase,
     (1 + attackTalentBonus + supportTalentBonus + attackerCombinedArmsBonus + tankHunterBonus + siegeColumnBonus) *
-      fortifyAttackPenalty,
+      fortifyAttackPenalty *
+      smokeAttackMultiplier,
     (1 + defenseTalentBonus + defenderCombinedArmsBonus + entrenchedInfantryBonus) * fortifyDefenseBonus,
     baseTalentDefenseBonus + baseAuraDefenseBonus + trenchDefenseBonus,
-    trenchAttackBonus,
+    trenchAttackBonus + artilleryFlatBonus,
   );
   const combat = isRangedArtilleryAttack ? { ...resolvedCombat, attackerLosses: 0 } : resolvedCombat;
   const remainingAttackers = removeUnitLosses(attacker.units, combat.attackerLosses, 'attacker');
@@ -2447,7 +2627,7 @@ function applyQueuedAttack(
     const attackerIndex = armies.findIndex((candidate) => candidate.id === attacker.id);
     if (attackerIndex >= 0) armies.splice(attackerIndex, 1);
   } else {
-    attacker.units = applyUnitXp(remainingAttackers, unitXpGained);
+    attacker.units = applyNormalArtilleryReload(applyUnitXp(remainingAttackers, unitXpGained), attacker, game.roundNumber);
     attacker.hasActedThisTurn = true;
   }
 
@@ -2473,6 +2653,14 @@ function addPlayerReward(rewards: Map<string, { supplies: number; xp: number }>,
     supplies: current.supplies + supplies,
     xp: current.xp + xp,
   });
+}
+
+function applyNormalArtilleryReload(units: UnitInstance[], sourceArmy: ArmyDoc, roundNumber: number) {
+  if (!isNormalArtilleryArmy(sourceArmy)) return units;
+  const reloadUntilRound = roundNumber + NORMAL_ARTILLERY_RELOAD_ROUNDS;
+  return units.map((unit) =>
+    NORMAL_ARTILLERY_UNIT_TYPES.has(unit.typeId) ? { ...unit, artilleryReloadUntilRound: reloadUntilRound } : unit,
+  );
 }
 
 function addPlayerStatDelta(deltas: Map<string, Partial<PlayerStats>>, playerId: string, delta: Partial<PlayerStats>) {
@@ -2583,6 +2771,7 @@ function makeTerrain(mapTemplate: MapTemplate): TileDoc[] {
         base: null,
         mine: null,
         trench: null,
+        smoke: null,
       });
     }
   }
@@ -2678,6 +2867,22 @@ function getNeighborTileIds(tile: TileDoc, mapWidth: number, mapHeight: number) 
   ]
     .filter(({ x, y }) => x >= 0 && y >= 0 && x < mapWidth && y < mapHeight)
     .map(({ x, y }) => tileIdFromCoords(x, y));
+}
+
+function getCornerTileIds(tile: TileDoc, mapWidth: number, mapHeight: number) {
+  return [
+    { x: tile.x + 1, y: tile.y + 1 },
+    { x: tile.x + 1, y: tile.y - 1 },
+    { x: tile.x - 1, y: tile.y + 1 },
+    { x: tile.x - 1, y: tile.y - 1 },
+  ]
+    .filter(({ x, y }) => x >= 0 && y >= 0 && x < mapWidth && y < mapHeight)
+    .map(({ x, y }) => tileIdFromCoords(x, y));
+}
+
+function triggeredMineTileForPath(path: TileDoc[], ownerId: string, army: ArmyDoc) {
+  if (!army.units.some((unit) => unit.typeId === 'tank')) return null;
+  return path.find((tile) => tile.mine && tile.mine.ownerId !== ownerId) ?? null;
 }
 
 function isUnitUnlocked(unitTypeId: UnitTypeId, barracksLevel: number) {
@@ -2843,6 +3048,7 @@ function upgradeCostForPlayer(baseCost: number, player: PlayerDoc) {
 
 function makeUnit(typeId: keyof typeof UNIT_TYPES, qualityBonus = 0): UnitInstance {
   const type = UNIT_TYPES[typeId];
+  const qualityHealthBonus = ARTILLERY_UNIT_TYPES.has(typeId) ? 0 : qualityBonus * QUALITY_HEALTH_BONUS_PER_LEVEL;
   return {
     id: `${typeId}_${crypto.randomUUID()}`,
     typeId,
@@ -2851,8 +3057,8 @@ function makeUnit(typeId: keyof typeof UNIT_TYPES, qualityBonus = 0): UnitInstan
     qualityLevel: 1 + qualityBonus,
     level: 1,
     xp: 0,
-    maxHealth: type.space,
-    currentHealth: type.space,
+    maxHealth: type.space + qualityHealthBonus,
+    currentHealth: type.space + qualityHealthBonus,
   };
 }
 
@@ -2878,11 +3084,158 @@ function isSimultaneousGame(game: Pick<GameDoc, 'mode'>) {
   return game.mode === 'timed-simultaneous';
 }
 
+function artilleryAttackFlatBonus(
+  attacker: ArmyDoc,
+  defender: ArmyDoc | null,
+  defendingBase: TileDoc['base'],
+  targetTile: TileDoc,
+) {
+  if (!isSoloArtilleryArmy(attacker)) return 0;
+  const artilleryType = attacker.units[0]?.typeId;
+  if (artilleryType === 'lightArtillery' && defender) return 2;
+  if (
+    artilleryType === 'siegeArtillery' &&
+    (defendingBase || targetTile.trench || (defender?.fortifyTurnsRemaining ?? 0) > 0)
+  ) {
+    return 4;
+  }
+  return 0;
+}
+
+function activeSmokeOnTile(tile: TileDoc, roundNumber: number) {
+  return Boolean(tile.smoke && tile.smoke.expiresRound >= roundNumber);
+}
+
+function smokeAreaTiles(originTile: TileDoc, tiles: TileDoc[]) {
+  const areaIds = new Set([
+    originTile.id,
+    tileIdFromCoords(originTile.x + 1, originTile.y),
+    tileIdFromCoords(originTile.x, originTile.y + 1),
+    tileIdFromCoords(originTile.x + 1, originTile.y + 1),
+  ]);
+  return tiles.filter((tile) => areaIds.has(tile.id));
+}
+
+function resolveSentryMoveExchange(
+  game: GameDoc,
+  player: PlayerDoc,
+  army: ArmyDoc,
+  path: TileDoc[],
+  movedUnits: UnitInstance[],
+  tiles: TileDoc[],
+) {
+  const trigger =
+    movedUnits.length > 0
+      ? path
+          .map((tile) => ({ tile, sentryAttack: strongestSentryAttackAgainst(tile, army.ownerId, tiles) }))
+          .find((entry) => entry.sentryAttack)
+      : null;
+  const sentryAttack = trigger?.sentryAttack ?? null;
+  const sentryDamage = (sentryAttack?.offenseConfig.damage ?? 0) * 10;
+  const afterSentry =
+    sentryAttack && sentryAttack.offenseConfig.damage > 0
+      ? removeUnitLosses(movedUnits, sentryAttack.offenseConfig.damage, 'defender')
+      : movedUnits;
+  const returnFireArmy = { ...army, units: afterSentry, hasActedThisTurn: false };
+  const canReturnFire = Boolean(
+    sentryAttack &&
+      afterSentry.length > 0 &&
+      trigger &&
+      isTileInAttackRange(returnFireArmy, trigger.tile, sentryAttack.tile, tiles),
+  );
+  const returnFireCombat =
+    canReturnFire && sentryAttack?.tile.base
+      ? resolveCombat(
+          afterSentry,
+          [],
+          sentryAttack.tile.terrainType,
+          sentryAttack.tile.base,
+          1 + (player.talents.attackTraining ?? 0) * 0.05,
+          1,
+          0,
+          trigger?.tile.trench ? TRENCH_ATTACK_BONUS : 0,
+        )
+      : null;
+
+  return {
+    sentryAttack,
+    triggerTile: trigger?.tile ?? null,
+    sentryDamage,
+    finalUnits: afterSentry,
+    returnFirePower: returnFireCombat?.attackPower ?? 0,
+    baseDestroyed: Boolean(returnFireCombat?.baseDestroyed),
+  };
+}
+
+function movementDebugLines({
+  fromTile,
+  targetTile,
+  path,
+  army,
+  triggeredMineTile,
+  mineTriggers,
+  mineDamage,
+  sentryAttack,
+  sentryDamage,
+  sentryTriggerTile,
+  sentryReturnFirePower,
+  sentryBaseDestroyed,
+  unitsLost,
+}: {
+  fromTile: TileDoc;
+  targetTile: TileDoc;
+  path: TileDoc[];
+  army: ArmyDoc;
+  triggeredMineTile: TileDoc | null;
+  mineTriggers: boolean;
+  mineDamage: number;
+  sentryAttack: ReturnType<typeof strongestSentryAttackAgainst> | null;
+  sentryDamage: number;
+  sentryTriggerTile: TileDoc | null;
+  sentryReturnFirePower: number;
+  sentryBaseDestroyed: boolean;
+  unitsLost: number;
+}) {
+  const hasTank = army.units.some((unit) => unit.typeId === 'tank');
+  const pathText = path.length > 0 ? path.map((tile) => `${tile.x},${tile.y}`).join(' -> ') : `${targetTile.x},${targetTile.y}`;
+  const mineText = triggeredMineTile
+    ? `mine=${triggeredMineTile.x},${triggeredMineTile.y} enemy, tank=${hasTank ? 'yes' : 'no'}, triggered=${mineTriggers ? 'yes' : 'no'}, damage=${mineTriggers ? mineDamage : 0}`
+    : `mine=none on crossed path, tank=${hasTank ? 'yes' : 'no'}`;
+  const sentryText = sentryAttack
+    ? `sentry=${sentryAttack.tile.x},${sentryAttack.tile.y} L${sentryAttack.offenseConfig.level}, trigger=${sentryTriggerTile?.x},${sentryTriggerTile?.y}, damage=${sentryDamage}, returnFire=${sentryReturnFirePower}, baseDestroyed=${sentryBaseDestroyed ? 'yes' : 'no'}`
+    : 'sentry=none';
+
+  return [
+    `Move debug: ${fromTile.x},${fromTile.y} -> ${targetTile.x},${targetTile.y}; path ${pathText}.`,
+    `Move damage check: ${mineText}; ${sentryText}; squads lost=${unitsLost}.`,
+  ];
+}
+
+function strongestSentryAttackAgainst(targetTile: TileDoc, movingPlayerId: string, tiles: TileDoc[]) {
+  return tiles
+    .filter((tile) => tile.base && !tile.base.ruined && tile.base.ownerId && tile.base.ownerId !== movingPlayerId)
+    .map((tile) => {
+      const offenseConfig = UPGRADE_CONFIG.baseOffense.find((level) => level.level === (tile.base!.offenseLevel ?? 1));
+      return { tile, offenseConfig };
+    })
+    .filter(
+      (entry): entry is { tile: TileDoc; offenseConfig: (typeof UPGRADE_CONFIG.baseOffense)[number] } =>
+        Boolean(
+          entry.offenseConfig &&
+            entry.offenseConfig.damage > 0 &&
+            chebyshevDistance(entry.tile, targetTile) <= entry.offenseConfig.range &&
+            hasLineOfSight(entry.tile, targetTile, tiles),
+        ),
+    )
+    .sort((a, b) => b.offenseConfig.damage - a.offenseConfig.damage || chebyshevDistance(a.tile, targetTile) - chebyshevDistance(b.tile, targetTile))[0] ?? null;
+}
+
 function canPlayerActInGame(game: GameDoc, playerId: string) {
-  return game.status === 'active' && (isSimultaneousGame(game) ? true : game.currentTurnPlayerId === playerId);
+  return game.status === 'active' && !game.isPaused && (isSimultaneousGame(game) ? true : game.currentTurnPlayerId === playerId);
 }
 
 function actionUnavailableMessage(game: GameDoc, turnBasedMessage: string) {
+  if (game.isPaused) return 'Gameplay is paused by the host.';
   return isSimultaneousGame(game) ? 'This round is not accepting actions right now.' : turnBasedMessage;
 }
 

@@ -1,7 +1,7 @@
 import type { CSSProperties } from 'react';
 import type { ArmyDoc, MoveOrderMode, PlayerDoc, TileDoc } from '../../types/gameTypes';
-import { UPGRADE_CONFIG } from '../../data/upgradeConfig';
-import { armyHealthPercent } from '../../utils/combat';
+import { BUILD_BASE_COST, BUILD_TRENCH_COST, UPGRADE_CONFIG } from '../../data/upgradeConfig';
+import { armyHealthPercent, armyPower } from '../../utils/combat';
 
 interface FloatingCombatText {
   id: string;
@@ -23,17 +23,28 @@ interface TileProps {
   army: ArmyDoc | null;
   owner: PlayerDoc | null;
   armyOwner: PlayerDoc | null;
+  mineOwner: PlayerDoc | null;
   unitTileOwnerTintEnabled: boolean;
   unitTileOwnerTintIntensity: number;
   unitOwnerBarEnabled: boolean;
+  sentryCoverageColor: string | null;
   isFogged: boolean;
   isExploredButNotVisible: boolean;
   actionRemaining: boolean | null;
   hasBaseDefenseBuff: boolean;
+  hasConnectedBaseNetwork: boolean;
+  trenchConnections: {
+    north: boolean;
+    east: boolean;
+    south: boolean;
+    west: boolean;
+  };
   isSelected: boolean;
   isReachable: boolean;
   isAttackRadius: boolean;
   isAttackable: boolean;
+  isSmokeTarget: boolean;
+  isSmokePreview: boolean;
   isAttackTarget: boolean;
   isMergeable: boolean;
   isMergeTarget: boolean;
@@ -45,7 +56,9 @@ interface TileProps {
   queuedMoveTurns: number | null;
   queuedMoveMode: MoveOrderMode | null;
   onClick: () => void;
+  onHover?: () => void;
   onOpenActions?: () => void;
+  onCancelSmokeTargeting?: () => void;
   onAttackClick?: () => void;
   onCombineClick?: () => void;
   onBuildTrenchClick?: () => void;
@@ -54,6 +67,7 @@ interface TileProps {
   onScavengeClick?: () => void;
   onHealClick?: () => void;
   onPlaceMineClick?: () => void;
+  onSmokeScreenClick?: () => void;
   onFortifyClick?: () => void;
   onSetAggressiveClick?: () => void;
   onSetPassiveClick?: () => void;
@@ -66,17 +80,23 @@ export default function Tile({
   army,
   owner,
   armyOwner,
+  mineOwner,
   unitTileOwnerTintEnabled,
   unitTileOwnerTintIntensity,
   unitOwnerBarEnabled,
+  sentryCoverageColor,
   isFogged,
   isExploredButNotVisible,
   actionRemaining,
   hasBaseDefenseBuff,
+  hasConnectedBaseNetwork,
+  trenchConnections,
   isSelected,
   isReachable,
   isAttackRadius,
   isAttackable,
+  isSmokeTarget,
+  isSmokePreview,
   isAttackTarget,
   isMergeable,
   isMergeTarget,
@@ -88,7 +108,9 @@ export default function Tile({
   queuedMoveTurns,
   queuedMoveMode,
   onClick,
+  onHover,
   onOpenActions,
+  onCancelSmokeTargeting,
   onAttackClick,
   onCombineClick,
   onBuildTrenchClick,
@@ -97,6 +119,7 @@ export default function Tile({
   onScavengeClick,
   onHealClick,
   onPlaceMineClick,
+  onSmokeScreenClick,
   onFortifyClick,
   onSetAggressiveClick,
   onSetPassiveClick,
@@ -107,18 +130,49 @@ export default function Tile({
   const baseDefense = showContents && tile.base
     ? UPGRADE_CONFIG.baseDefense.find((level) => level.level === tile.base!.defenseLevel)?.bonus ?? 0
     : 0;
+  const baseAttack = showContents && tile.base
+    ? (UPGRADE_CONFIG.baseOffense.find((level) => level.level === (tile.base!.offenseLevel ?? 1))?.damage ?? 0) * 10
+    : 0;
   const baseQualityLevel = tile.base
     ? Math.max(tile.base.unitQualityLevel ?? 1, ...Object.values(tile.base.unitQualityByType ?? {}).map((level) => level ?? 1))
     : 1;
+  const trenchOrientation =
+    (trenchConnections.north || trenchConnections.south) && !trenchConnections.east && !trenchConnections.west
+      ? 'vertical'
+      : 'horizontal';
+  const baseLevelClass = tile.base ? `base-marker-lvl${Math.min(5, Math.max(1, tile.base.barracksLevel ?? 1))}` : '';
+  const grassVariantClass = tile.terrainType === 'plains' ? `grass-variant-${((tile.x * 7 + tile.y * 11) % 3) + 1}` : '';
+  const grassRotationClass = tile.terrainType === 'plains' ? `grass-rot-${((tile.x * 5 + tile.y * 13) % 4) * 90}` : '';
+  const darkGrassVariantClass = tile.terrainType === 'forest' ? `darkgrass-variant-${((tile.x * 5 + tile.y * 9) % 2) + 1}` : '';
+  const darkGrassRotationClass = tile.terrainType === 'forest' ? `darkgrass-rot-${((tile.x * 13 + tile.y * 3) % 4) * 90}` : '';
+  const dirtVariantClass = tile.terrainType === 'hill' ? `dirt-variant-${((tile.x * 11 + tile.y * 7) % 2) + 1}` : '';
+  const dirtRotationClass = tile.terrainType === 'hill' ? `dirt-rot-${((tile.x * 17 + tile.y * 5) % 4) * 90}` : '';
+  const waterVariantClass = tile.terrainType === 'water' ? `water-variant-${((tile.x * 3 + tile.y * 7) % 2) + 1}` : '';
+  const waterRotationClass = tile.terrainType === 'water' ? `water-rot-${((tile.x * 11 + tile.y * 5) % 4) * 90}` : '';
   const actionButtons = [
     onAttackClick ? { label: 'Attack', className: 'attack-action', onClick: onAttackClick } : null,
     onCombineClick ? { label: 'Combine', className: 'combine-action', onClick: onCombineClick } : null,
-    onBuildTrenchClick ? { label: 'Build Trench', className: 'trench-action', onClick: onBuildTrenchClick } : null,
-    onBuildBaseClick ? { label: 'Build Base', className: 'build-action', onClick: onBuildBaseClick } : null,
+    onBuildTrenchClick
+      ? {
+          label: 'Build Trench',
+          className: 'trench-action',
+          onClick: onBuildTrenchClick,
+          tooltip: `Cost: ${BUILD_TRENCH_COST} supplies. Adds trench attack/defense bonuses on this tile.`,
+        }
+      : null,
+    onBuildBaseClick
+      ? {
+          label: 'Build Base',
+          className: 'build-action',
+          onClick: onBuildBaseClick,
+          tooltip: `Cost: ${BUILD_BASE_COST} supplies. Consumes this Logistics squad.`,
+        }
+      : null,
     onReclaimBaseClick ? { label: 'Reclaim Base', className: 'build-action', onClick: onReclaimBaseClick } : null,
     onScavengeClick ? { label: 'Scavenge', className: 'scavenge-action', onClick: onScavengeClick } : null,
     onHealClick ? { label: 'Heal', className: 'heal-action', onClick: onHealClick } : null,
     onPlaceMineClick ? { label: 'Mine', className: 'mine-action', onClick: onPlaceMineClick } : null,
+    onSmokeScreenClick ? { label: 'Smoke Screen', className: 'smoke-action', onClick: onSmokeScreenClick } : null,
     onFortifyClick ? { label: 'Fortify', className: 'fortify-action', onClick: onFortifyClick } : null,
     onSetAggressiveClick
       ? {
@@ -152,6 +206,14 @@ export default function Tile({
       className={[
         'tile',
         `terrain-${tile.terrainType}`,
+        grassVariantClass,
+        grassRotationClass,
+        darkGrassVariantClass,
+        darkGrassRotationClass,
+        dirtVariantClass,
+        dirtRotationClass,
+        waterVariantClass,
+        waterRotationClass,
         isFogged ? 'fogged' : '',
         isExploredButNotVisible ? 'scouted' : '',
         army && actionRemaining ? 'action-ready' : '',
@@ -161,6 +223,8 @@ export default function Tile({
         isReachable ? 'reachable' : '',
         isAttackRadius ? 'attack-radius' : '',
         isAttackable ? 'attackable' : '',
+        isSmokeTarget ? 'smoke-target' : '',
+        isSmokePreview ? 'smoke-preview' : '',
         isAttackTarget ? 'attack-target' : '',
         isMergeable ? 'mergeable' : '',
         isMergeTarget ? 'merge-target' : '',
@@ -168,7 +232,14 @@ export default function Tile({
         queuedMoveTurns ? 'queued-destination' : '',
       ].join(' ')}
       onClick={onClick}
+      onMouseEnter={onHover}
       onContextMenu={(event) => {
+        if (onCancelSmokeTargeting) {
+          event.preventDefault();
+          event.stopPropagation();
+          onCancelSmokeTargeting();
+          return;
+        }
         if (!army || !onOpenActions) return;
         event.preventDefault();
         event.stopPropagation();
@@ -186,12 +257,21 @@ export default function Tile({
               : owner?.color ?? 'rgba(255,255,255,0.16)'
             : 'rgba(255,255,255,0.16)',
         '--unit-owner-color': armyOwner?.color ?? 'transparent',
-        '--unit-owner-tint': `${isSelected ? Math.round(unitTileOwnerTintIntensity * 0.45) : unitTileOwnerTintIntensity}%`,
+        '--mine-owner-color': mineOwner?.color ?? '#f0c95d',
+        '--sentry-coverage-color': sentryCoverageColor ?? 'transparent',
+        '--unit-owner-tint': `${unitTileOwnerTintIntensity}%`,
       } as CSSProperties}
     >
+      {showContents && sentryCoverageColor && <span className="sentry-coverage" aria-hidden="true" />}
+      {showContents && army && unitTileOwnerTintEnabled && <span className="unit-owner-tint" aria-hidden="true" />}
+      {showContents && isSelected && <span className="tile-highlight selected-highlight" aria-hidden="true" />}
+      {showContents && isReachable && <span className="tile-highlight movement-highlight" aria-hidden="true" />}
+      {showContents && isAttackRadius && <span className="tile-highlight attack-radius-highlight" aria-hidden="true" />}
+      {showContents && isAttackable && <span className="tile-highlight attackable-highlight" aria-hidden="true" />}
+      {showContents && isMergeable && <span className="tile-highlight merge-highlight" aria-hidden="true" />}
       {showContents && tile.base && onBaseClick && (
         <button
-          className="base-marker"
+          className={`base-marker ${baseLevelClass}`}
           style={{ '--base-color': tile.base.ruined ? '#8f949c' : owner?.color ?? '#f0c95d' } as CSSProperties}
           onClick={(event) => {
             event.stopPropagation();
@@ -209,15 +289,17 @@ export default function Tile({
           {(tile.base.defenseLevel ?? 1) >= 2 && <span className="base-defense-wall" />}
           {(tile.base.defenseLevel ?? 1) >= 3 && <span className="base-bunker" />}
           {(tile.base.offenseLevel ?? 1) >= 2 && <span className="base-sentry-gun" />}
-          {(tile.base.offenseLevel ?? 1) >= 3 && <span className="base-watch-tower" />}
+          {(tile.base.offenseLevel ?? 1) >= 5 && <span className="base-watch-tower" />}
           {baseQualityLevel >= 2 && <span className="base-quality-mark base-quality-mark-one" />}
           {baseQualityLevel >= 3 && <span className="base-quality-mark base-quality-mark-two" />}
+          {hasConnectedBaseNetwork && <span className="base-network-mark" aria-hidden="true">↔</span>}
+          <span className="base-attack">A{baseAttack}</span>
           <span className="base-defense">D{baseDefense}</span>
         </button>
       )}
       {showContents && tile.base && !onBaseClick && (
         <span
-          className="base-marker"
+          className={`base-marker ${baseLevelClass}`}
           style={{ '--base-color': tile.base.ruined ? '#8f949c' : owner?.color ?? '#f0c95d' } as CSSProperties}
         >
           <span className="base-roof" />
@@ -230,9 +312,11 @@ export default function Tile({
           {(tile.base.defenseLevel ?? 1) >= 2 && <span className="base-defense-wall" />}
           {(tile.base.defenseLevel ?? 1) >= 3 && <span className="base-bunker" />}
           {(tile.base.offenseLevel ?? 1) >= 2 && <span className="base-sentry-gun" />}
-          {(tile.base.offenseLevel ?? 1) >= 3 && <span className="base-watch-tower" />}
+          {(tile.base.offenseLevel ?? 1) >= 5 && <span className="base-watch-tower" />}
           {baseQualityLevel >= 2 && <span className="base-quality-mark base-quality-mark-one" />}
           {baseQualityLevel >= 3 && <span className="base-quality-mark base-quality-mark-two" />}
+          {hasConnectedBaseNetwork && <span className="base-network-mark" aria-hidden="true">↔</span>}
+          <span className="base-attack">A{baseAttack}</span>
           <span className="base-defense">D{baseDefense}</span>
         </span>
       )}
@@ -254,6 +338,12 @@ export default function Tile({
             } as CSSProperties
           }
         >
+          <span className="army-attack-chip" title="Attack power">
+            A{armyPower(army.units, 'attack')}
+          </span>
+          <span className="army-defense-chip" title="Defense power">
+            D{armyPower(army.units, 'defense')}
+          </span>
           {unitOwnerBarEnabled && <span className="army-owner-strip" style={{ backgroundColor: armyOwner?.color }} />}
           <span className="unit-formation" aria-label={`Unit at ${tile.x}, ${tile.y}`}>
             {army.units.map((unit) => (
@@ -266,12 +356,16 @@ export default function Tile({
         </span>
       )}
       {showContents && tile.trench && (
-        <span className="trench-marker" aria-label="Trench">
-          <span className="trench-line" aria-hidden="true" />
-          <span className="trench-badge" aria-hidden="true">T</span>
+        <span className={`trench-marker trench-${trenchOrientation}`} aria-label="Trench" />
+      )}
+      {showContents && tile.smoke && (
+        <span className="smoke-marker" title={`Smoke screen through round ${tile.smoke.expiresRound}`} aria-label="Smoke screen">
+          <span className="smoke-puff smoke-puff-one" />
+          <span className="smoke-puff smoke-puff-two" />
+          <span className="smoke-puff smoke-puff-three" />
         </span>
       )}
-      {showContents && tile.mine && <span className="mine-marker">M</span>}
+      {tile.mine && <span className="mine-marker" title="Anti-tank mine">M</span>}
       {showContents && hasArtilleryImpact && (
         <span className="artillery-impact" aria-hidden="true">
           <span className="artillery-blast-ring" />

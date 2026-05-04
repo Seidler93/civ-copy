@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { backOutOfGame, resetGameToLobby } from '../../firebase/gameService';
+import { backOutOfGame, resetGameToLobby, setGamePaused } from '../../firebase/gameService';
 import type { GameDoc } from '../../types/gameTypes';
 
 interface GameSettingsProps {
@@ -39,6 +39,17 @@ export default function GameSettings({ game, currentPlayerId, onMessage }: GameS
     }
   }
 
+  async function handlePauseToggle() {
+    setIsBusy(true);
+    try {
+      onMessage(await setGamePaused(game.id, currentPlayerId, !game.isPaused));
+    } catch (err) {
+      onMessage(err instanceof Error ? err.message : 'Could not update pause state.');
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
   return (
     <section className="panel settings-panel">
       <p className="eyebrow">{isHost ? 'Host Settings' : 'Player Settings'}</p>
@@ -49,9 +60,14 @@ export default function GameSettings({ game, currentPlayerId, onMessage }: GameS
             Back Out
           </button>
           {isHost && (
-            <button className="danger-button" disabled={isBusy} onClick={() => setConfirmingAction('end')}>
-              End Game
-            </button>
+            <>
+              <button className="secondary" disabled={isBusy} onClick={handlePauseToggle}>
+                {game.isPaused ? 'Resume Gameplay' : 'Pause Gameplay'}
+              </button>
+              <button className="danger-button" disabled={isBusy} onClick={() => setConfirmingAction('end')}>
+                End Game
+              </button>
+            </>
           )}
         </>
       )}

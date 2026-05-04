@@ -11,7 +11,7 @@ interface TurnPanelProps {
 export default function TurnPanel({ game, currentPlayer, turnPlayer }: TurnPanelProps) {
   const isTimedMode = game.mode === 'timed-simultaneous';
   const isFinished = game.status === 'finished';
-  const isMyTurn = (isTimedMode || game.currentTurnPlayerId === currentPlayer.id) && !currentPlayer.isEliminated;
+  const isMyTurn = !game.isPaused && (isTimedMode || game.currentTurnPlayerId === currentPlayer.id) && !currentPlayer.isEliminated;
   const [remainingMs, setRemainingMs] = useState(() => Math.max(0, (game.roundEndsAtMs ?? 0) - Date.now()));
 
   useEffect(() => {
@@ -36,6 +36,8 @@ export default function TurnPanel({ game, currentPlayer, turnPlayer }: TurnPanel
           ? game.winnerPlayerId === currentPlayer.id
             ? 'Victory'
             : 'Game over'
+          : game.isPaused
+            ? 'Paused'
           : currentPlayer.isEliminated
           ? 'Eliminated'
           : isTimedMode
@@ -49,6 +51,8 @@ export default function TurnPanel({ game, currentPlayer, turnPlayer }: TurnPanel
         <p className="muted">
           {game.victoryReason === 'turn-limit' ? 'Match ended on the round cap. Highest XP wins.' : 'A winner has been decided.'}
         </p>
+      ) : game.isPaused ? (
+        <p className="muted">Gameplay is paused by the host. Map viewing stays available.</p>
       ) : isTimedMode ? (
         <p className="muted">
           Round timer: {Math.floor(remainingMs / 1000)}s remaining

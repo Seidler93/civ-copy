@@ -1,9 +1,12 @@
-import type { ArmyDoc, PlayerDoc, TileDoc } from '../types/gameTypes';
+import type { ArmyDoc, PlayerDoc, TileDoc, UnitTypeId } from '../types/gameTypes';
 import { ARMY_SPACE_CAPACITY, armySpaceUsed } from './combat';
 
-export const ARTILLERY_ATTACK_RANGE = 8;
+export const ARTILLERY_ATTACK_RANGE = 6;
 export const STANDARD_ATTACK_RANGE = 2;
 export const RECON_MOVEMENT_BONUS = 3;
+export const NORMAL_ARTILLERY_RELOAD_ROUNDS = 2;
+export const ARTILLERY_UNIT_TYPES = new Set<UnitTypeId>(['artillery', 'lightArtillery', 'smokeArtillery', 'siegeArtillery']);
+export const NORMAL_ARTILLERY_UNIT_TYPES = new Set<UnitTypeId>(['artillery', 'lightArtillery']);
 
 export function tileIdFromCoords(x: number, y: number) {
   return `${x}_${y}`;
@@ -33,6 +36,7 @@ export function canMoveArmy(
   if ((army.fortifyTurnsRemaining ?? 0) > 0) return false;
   if (remainingMovement <= 0) return false;
   if (to.armyId) return false;
+  if (isActiveBaseTile(to)) return false;
   if (isImpassableTerrain(to)) return false;
   const cost = movementCost(from, to, tiles, { armies, passThroughOwnerId: army.ownerId });
   return cost !== null && cost <= remainingMovement;
@@ -40,6 +44,10 @@ export function canMoveArmy(
 
 export function isImpassableTerrain(tile: TileDoc) {
   return tile.terrainType === 'water' || tile.terrainType === 'mountain';
+}
+
+export function isActiveBaseTile(tile: TileDoc) {
+  return Boolean(tile.base && !tile.base.ruined);
 }
 
 export function canCombineArmies(
@@ -91,7 +99,7 @@ export function canLogisticsScavenge(army: ArmyDoc) {
 }
 
 export function armyHasArtillery(army: ArmyDoc) {
-  return army.units.some((unit) => unit.typeId === 'artillery');
+  return army.units.some((unit) => ARTILLERY_UNIT_TYPES.has(unit.typeId));
 }
 
 export function armyHasRecon(army?: ArmyDoc | null) {
@@ -103,12 +111,22 @@ export function armyMustStaySolo(army: ArmyDoc) {
 }
 
 export function isSoloArtilleryArmy(army: ArmyDoc) {
-  return army.units.length === 1 && army.units[0].typeId === 'artillery';
+  return army.units.length === 1 && ARTILLERY_UNIT_TYPES.has(army.units[0].typeId);
 }
 
-export function canAttackTile(army: ArmyDoc, from: TileDoc, to: TileDoc, playerId: string, tiles: TileDoc[] = []) {
+export function isNormalArtilleryArmy(army: ArmyDoc) {
+  return army.units.length === 1 && NORMAL_ARTILLERY_UNIT_TYPES.has(army.units[0].typeId);
+}
+
+export function normalArtilleryCanFire(army: ArmyDoc, roundNumber: number) {
+  if (!isNormalArtilleryArmy(army)) return true;
+  return (army.units[0].artilleryReloadUntilRound ?? 0) <= roundNumber;
+}
+
+export function canAttackTile(army: ArmyDoc, from: TileDoc, to: TileDoc, playerId: string, tiles: TileDoc[] = [], roundNumber?: number) {
   if (army.hasActedThisTurn) return false;
   if (army.ownerId !== playerId) return false;
+  if (roundNumber !== undefined && !normalArtilleryCanFire(army, roundNumber)) return false;
   if (!isTileInAttackRange(army, from, to, tiles)) return false;
 
   const hasEnemyArmy = Boolean(to.armyId);
@@ -152,8 +170,9 @@ export function getAttackStagingTile(
   target: TileDoc,
   player: PlayerDoc,
   _armies: ArmyDoc[] = [],
+  roundNumber?: number,
 ) {
-  return canAttackTile(army, from, target, player.id, tiles) ? from : null;
+  return canAttackTile(army, from, target, player.id, tiles, roundNumber) ? from : null;
 }
 
 interface MovementPathOptions {

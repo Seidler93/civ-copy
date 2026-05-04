@@ -1,4 +1,5 @@
 import { type CSSProperties, PointerEvent, WheelEvent, useMemo, useRef, useState } from 'react';
+import { UPGRADE_CONFIG } from '../../data/upgradeConfig';
 import type { ArmyDoc, GameState, MoveOrderMode, PlayerDoc, TileDoc } from '../../types/gameTypes';
 import { armyHasMedic } from '../../utils/combat';
 import {
@@ -8,11 +9,16 @@ import {
   canLogisticsBuildTrench,
   canLogisticsScavenge,
   canMoveArmy,
+  chebyshevDistance,
   getAttackStagingTile,
+  hasLineOfSight,
   isTileInAttackRange,
   movementAllowance,
+  normalArtilleryCanFire,
+  tileIdFromCoords,
 } from '../../utils/movement';
 import { visibleTileIdsForPlayer } from '../../utils/vision';
+import { connectedBaseTiles } from '../../utils/trenchNetwork';
 import Tile from './Tile';
 
 interface FloatingCombatText {
@@ -36,6 +42,7 @@ interface BulletTrace {
   toTileId: string;
   delayMs: number;
   laneOffset: number;
+  kind?: 'direct' | 'arc';
 }
 
 interface AttackFacing {
@@ -61,6 +68,7 @@ interface GridMapProps {
   selectedArmy: ArmyDoc | null;
   targetedAttackTileId: string | null;
   targetedMergeTileId: string | null;
+  smokeTargetingArmyId: string | null;
   combatTexts: FloatingCombatText[];
   moveAnimations: MoveAnimation[];
   bulletTraces: BulletTrace[];
@@ -70,6 +78,7 @@ interface GridMapProps {
   unitTileOwnerTintEnabled: boolean;
   unitTileOwnerTintIntensity: number;
   unitOwnerBarEnabled: boolean;
+  attackRadiusVisible: boolean;
   onTileClick: (tile: GameState['tiles'][number], occupyingArmy: ArmyDoc | null) => void;
   onAttackClick: (tile: TileDoc) => void;
   onCombineClick: (targetArmy: ArmyDoc) => void;
@@ -79,10 +88,12 @@ interface GridMapProps {
   onScavengeClick: (builderArmy: ArmyDoc) => void;
   onHealClick: (army: ArmyDoc) => void;
   onPlaceMineClick: (army: ArmyDoc) => void;
+  onSmokeScreenClick: (army: ArmyDoc) => void;
   onFortifyClick: (army: ArmyDoc) => void;
   onSetMoveOrderMode: (army: ArmyDoc, mode: MoveOrderMode) => void;
   onClearMoveOrder: (army: ArmyDoc) => void;
   onBaseClick: (tile: TileDoc) => void;
+  onCancelSmokeTargeting: () => void;
 }
 
 export default function GridMap({
@@ -91,6 +102,7 @@ export default function GridMap({
   selectedArmy,
   targetedAttackTileId,
   targetedMergeTileId,
+  smokeTargetingArmyId,
   combatTexts,
   moveAnimations,
   bulletTraces,
@@ -100,6 +112,7 @@ export default function GridMap({
   unitTileOwnerTintEnabled,
   unitTileOwnerTintIntensity,
   unitOwnerBarEnabled,
+  attackRadiusVisible,
   onTileClick,
   onAttackClick,
   onCombineClick,
@@ -109,14 +122,17 @@ export default function GridMap({
   onScavengeClick,
   onHealClick,
   onPlaceMineClick,
+  onSmokeScreenClick,
   onFortifyClick,
   onSetMoveOrderMode,
   onClearMoveOrder,
   onBaseClick,
+  onCancelSmokeTargeting,
 }: GridMapProps) {
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [actionMenuTileId, setActionMenuTileId] = useState<string | null>(null);
+  const [hoveredTileId, setHoveredTileId] = useState<string | null>(null);
   const [dragStart, setDragStart] = useState<{ pointerId: number; x: number; y: number; panX: number; panY: number } | null>(
     null,
   );
@@ -139,16 +155,88 @@ export default function GridMap({
     () => new Set([...(currentPlayer.exploredTileIds ?? []), ...visibleTileIds]),
     [currentPlayer.exploredTileIds, visibleTileIds],
   );
+  const combatTextsByTileId = useMemo(() => {
+    const entriesByTile = new Map<string, FloatingCombatText[]>();
+    combatTexts.forEach((entry) => {
+      const entries = entriesByTile.get(entry.tileId) ?? [];
+      entries.push(entry);
+      entriesByTile.set(entry.tileId, entries);
+    });
+    return entriesByTile;
+  }, [combatTexts]);
+  const moveAnimationsByTileId = useMemo(
+    () => new Map(moveAnimations.map((entry) => [entry.tileId, entry])),
+    [moveAnimations],
+  );
+  const attackFacingsByArmyId = useMemo(
+    () => new Map(attackFacings.map((entry) => [entry.armyId, entry])),
+    [attackFacings],
+  );
+  const artilleryImpactTileIds = useMemo(
+    () => new Set(artilleryImpacts.map((entry) => entry.tileId)),
+    [artilleryImpacts],
+  );
+  const baseAuraOwnerIdsByTileId = useMemo(() => {
+    const aura = new Map<string, Set<string>>();
+    gameState.tiles.forEach((baseTile) => {
+      if (!baseTile.base?.ownerId || baseTile.base.ruined) return;
+      for (let y = baseTile.y - 1; y <= baseTile.y + 1; y += 1) {
+        for (let x = baseTile.x - 1; x <= baseTile.x + 1; x += 1) {
+          const tileId = tileIdFromCoords(x, y);
+          const ownerIds = aura.get(tileId) ?? new Set<string>();
+          ownerIds.add(baseTile.base.ownerId);
+          aura.set(tileId, ownerIds);
+        }
+      }
+    });
+    return aura;
+  }, [gameState.tiles]);
+  const sentryCoverageByTileId = useMemo(() => {
+    const coverage = new Map<string, string>();
+    const visibleIds = new Set(visibleTileIds);
+    const tileByCoord = new Map(gameState.tiles.map((tile) => [tileIdFromCoords(tile.x, tile.y), tile]));
+    const sentryBases = gameState.tiles
+      .filter((tile) => tile.base && !tile.base.ruined && tile.base.ownerId)
+      .map((tile) => ({
+        tile,
+        owner: playersById.get(tile.base!.ownerId!),
+        offense: UPGRADE_CONFIG.baseOffense.find((level) => level.level === (tile.base!.offenseLevel ?? 1)),
+      }))
+      .filter((entry) => entry.owner && entry.offense && entry.offense.damage > 0);
+
+    sentryBases.forEach((sentryBase) => {
+      const range = sentryBase.offense!.range;
+      for (let y = sentryBase.tile.y - range; y <= sentryBase.tile.y + range; y += 1) {
+        for (let x = sentryBase.tile.x - range; x <= sentryBase.tile.x + range; x += 1) {
+          const tile = tileByCoord.get(tileIdFromCoords(x, y));
+          if (!tile || coverage.has(tile.id) || !visibleIds.has(tile.id)) continue;
+          if (chebyshevDistance(sentryBase.tile, tile) > range) continue;
+          if (!hasLineOfSight(sentryBase.tile, tile, gameState.tiles)) continue;
+          coverage.set(tile.id, sentryBase.owner!.color);
+        }
+      }
+    });
+
+    return coverage;
+  }, [gameState.tiles, playersById, visibleTileIds]);
 
   const sortedTiles = useMemo(() => [...gameState.tiles].sort((a, b) => a.y - b.y || a.x - b.x), [gameState.tiles]);
   const tileById = useMemo(() => new Map(gameState.tiles.map((tile) => [tile.id, tile])), [gameState.tiles]);
+  const hoveredTile = hoveredTileId ? tileById.get(hoveredTileId) ?? null : null;
+  const smokePreviewIds = useMemo(
+    () =>
+      hoveredTile && smokeTargetingArmyId && selectedArmy && selectedTile && isTileInAttackRange(selectedArmy, selectedTile, hoveredTile, gameState.tiles)
+        ? smokeAreaIdsForOrigin(hoveredTile)
+        : new Set<string>(),
+    [gameState.tiles, hoveredTile, selectedArmy, selectedTile, smokeTargetingArmyId],
+  );
   const canCurrentPlayerAct =
     gameState.game.status === 'active' &&
     !currentPlayer.isEliminated &&
     (gameState.game.mode === 'timed-simultaneous' || gameState.game.currentTurnPlayerId === currentPlayer.id);
 
   function clampZoom(value: number) {
-    return Math.min(2.35, Math.max(0.78, Number(value.toFixed(2))));
+    return Math.min(2.35, Math.max(0.5, Number(value.toFixed(2))));
   }
 
   function changeZoom(delta: number) {
@@ -173,6 +261,11 @@ export default function GridMap({
   }
 
   function handlePointerDown(event: PointerEvent<HTMLDivElement>) {
+    if (event.button === 2 && smokeTargetingArmyId) {
+      event.preventDefault();
+      onCancelSmokeTargeting();
+      return;
+    }
     if (event.button !== 0 && event.button !== 1) return;
     const target = event.target as HTMLElement;
     if (target.closest('button')) return;
@@ -290,6 +383,25 @@ export default function GridMap({
               const angle = Math.atan2(deltaY, deltaX) * (180 / Math.PI);
               const perpendicularX = length > 0 ? (-deltaY / length) * trace.laneOffset : 0;
               const perpendicularY = length > 0 ? (deltaX / length) * trace.laneOffset : 0;
+              if (trace.kind === 'arc') {
+                const shellArc = Math.max(58, Math.min(170, length * 0.28));
+                return (
+                  <span
+                    className="artillery-shell-trace"
+                    key={trace.id}
+                    style={
+                      {
+                        left: fromX + perpendicularX,
+                        top: fromY + perpendicularY,
+                        animationDelay: `${trace.delayMs}ms`,
+                        '--shell-dx': `${deltaX - perpendicularX * 0.35}px`,
+                        '--shell-dy': `${deltaY - perpendicularY * 0.35}px`,
+                        '--shell-arc': `${shellArc}px`,
+                      } as CSSProperties
+                    }
+                  />
+                );
+              }
               return (
                 <span
                   className="bullet-trace"
@@ -316,13 +428,15 @@ export default function GridMap({
             const visibleBase = isDiscovered || tile.base?.ownerId === currentPlayer.id ? tile.base : null;
             const owner = visibleBase?.ownerId ? playersById.get(visibleBase.ownerId) ?? null : null;
             const armyOwner = army ? playersById.get(army.ownerId) ?? null : null;
+            const mineOwner = tile.mine?.ownerId ? playersById.get(tile.mine.ownerId) ?? null : null;
+            const hasConnectedBaseNetwork = Boolean(
+              visibleBase &&
+                !visibleBase.ruined &&
+                connectedBaseTiles({ ...tile, base: visibleBase }, gameState.tiles, gameState.armies).length > 1,
+            );
             const hasBaseDefenseBuff = Boolean(
               army &&
-                gameState.tiles.some(
-                  (baseTile) =>
-                    baseTile.base?.ownerId === army.ownerId &&
-                    Math.max(Math.abs(baseTile.x - tile.x), Math.abs(baseTile.y - tile.y)) <= 1,
-                ),
+                baseAuraOwnerIdsByTileId.get(tile.id)?.has(army.ownerId),
             );
             const hasEnemyArmy = Boolean(army && army.ownerId !== currentPlayer.id);
             const hasEnemyBase = Boolean(visibleBase && !visibleBase.ruined && visibleBase.ownerId !== currentPlayer.id);
@@ -397,6 +511,16 @@ export default function GridMap({
                 !army.hasActedThisTurn &&
                 !tile.mine,
             );
+            const canSmokeScreen = Boolean(
+                army &&
+                selectedArmy?.id === army.id &&
+                army.ownerId === currentPlayer.id &&
+                canCurrentPlayerAct &&
+                army.units.length === 1 &&
+                army.units[0].typeId === 'smokeArtillery' &&
+                (army.units[0].smokeReloadUntilRound ?? 0) <= gameState.game.roundNumber &&
+                !army.hasActedThisTurn,
+            );
             const canFortify = Boolean(
                 army &&
                 selectedArmy?.id === army.id &&
@@ -413,11 +537,13 @@ export default function GridMap({
                 canMoveArmy(selectedArmy, selectedTile, tile, currentPlayer, gameState.tiles, gameState.armies),
             );
             const isAttackRadius = Boolean(
+                attackRadiusVisible &&
                 selectedArmy &&
                 selectedIsMine &&
                 selectedTile &&
                 canCurrentPlayerAct &&
                 !selectedArmy.hasActedThisTurn &&
+                normalArtilleryCanFire(selectedArmy, gameState.game.roundNumber) &&
                 isVisible &&
                 isTileInAttackRange(selectedArmy, selectedTile, tile, gameState.tiles),
             );
@@ -427,13 +553,39 @@ export default function GridMap({
                 selectedTile &&
                 canCurrentPlayerAct &&
                 (hasEnemyArmy || hasEnemyBase) &&
-                getAttackStagingTile(gameState.tiles, selectedArmy, selectedTile, tile, currentPlayer, gameState.armies),
+                getAttackStagingTile(
+                  gameState.tiles,
+                  selectedArmy,
+                  selectedTile,
+                  tile,
+                  currentPlayer,
+                  gameState.armies,
+                  gameState.game.roundNumber,
+                ),
             );
-            const tileCombatTexts = combatTexts.filter((entry) => entry.tileId === tile.id);
-            const moveAnimation = moveAnimations.find((entry) => entry.tileId === tile.id) ?? null;
-            const attackFacing = army ? attackFacings.find((entry) => entry.armyId === army.id) ?? null : null;
-            const hasArtilleryImpact = artilleryImpacts.some((entry) => entry.tileId === tile.id);
+            const tileCombatTexts = combatTextsByTileId.get(tile.id) ?? [];
+            const moveAnimation = moveAnimationsByTileId.get(tile.id) ?? null;
+            const attackFacing = army ? attackFacingsByArmyId.get(army.id) ?? null : null;
+            const hasArtilleryImpact = artilleryImpactTileIds.has(tile.id);
             const isQueuedDestination = queuedMovePreview?.tileId === tile.id;
+            const isSmokeTarget = Boolean(
+                selectedArmy &&
+                smokeTargetingArmyId === selectedArmy.id &&
+                selectedIsMine &&
+                selectedTile &&
+                canCurrentPlayerAct &&
+                isVisible &&
+                isTileInAttackRange(selectedArmy, selectedTile, tile, gameState.tiles),
+            );
+            const isSmokePreview = smokePreviewIds.has(tile.id);
+            const trenchConnections = tile.trench
+              ? {
+                  north: Boolean(tileById.get(tileIdFromCoords(tile.x, tile.y - 1))?.trench),
+                  east: Boolean(tileById.get(tileIdFromCoords(tile.x + 1, tile.y))?.trench),
+                  south: Boolean(tileById.get(tileIdFromCoords(tile.x, tile.y + 1))?.trench),
+                  west: Boolean(tileById.get(tileIdFromCoords(tile.x - 1, tile.y))?.trench),
+                }
+              : { north: false, east: false, south: false, west: false };
             return (
               <Tile
                 key={tile.id}
@@ -441,9 +593,11 @@ export default function GridMap({
                 army={army}
                 owner={owner}
                 armyOwner={armyOwner}
+                mineOwner={mineOwner}
                 unitTileOwnerTintEnabled={unitTileOwnerTintEnabled}
                 unitTileOwnerTintIntensity={unitTileOwnerTintIntensity}
                 unitOwnerBarEnabled={unitOwnerBarEnabled}
+                sentryCoverageColor={sentryCoverageByTileId.get(tile.id) ?? null}
                 isFogged={!isDiscovered}
                 isExploredButNotVisible={isDiscovered && !isVisible}
                 actionRemaining={
@@ -456,10 +610,14 @@ export default function GridMap({
                     : null
                 }
                 hasBaseDefenseBuff={hasBaseDefenseBuff}
+                hasConnectedBaseNetwork={hasConnectedBaseNetwork}
+                trenchConnections={trenchConnections}
                 isSelected={selectedArmy?.tileId === tile.id}
                 isReachable={isReachable}
                 isAttackRadius={isAttackRadius}
                 isAttackable={isAttackable}
+                isSmokeTarget={isSmokeTarget}
+                isSmokePreview={isSmokePreview}
                 isAttackTarget={targetedAttackTileId === tile.id}
                 isMergeable={isMergeable}
                 isMergeTarget={targetedMergeTileId === tile.id}
@@ -473,6 +631,8 @@ export default function GridMap({
                 queuedMoveTurns={isQueuedDestination ? queuedMovePreview?.turnsRemaining ?? null : null}
                 queuedMoveMode={isQueuedDestination ? queuedMovePreview?.mode ?? null : null}
                 onClick={() => handleTileClick(tile, army)}
+                onHover={() => setHoveredTileId(tile.id)}
+                onCancelSmokeTargeting={smokeTargetingArmyId ? onCancelSmokeTargeting : undefined}
                 onOpenActions={army ? () => setActionMenuTileId((current) => (current === tile.id ? null : tile.id)) : undefined}
                 onAttackClick={isAttackable && targetedAttackTileId === tile.id ? () => runAction(() => onAttackClick(tile)) : undefined}
                 onCombineClick={
@@ -484,6 +644,7 @@ export default function GridMap({
                 onScavengeClick={canScavenge && army ? () => runAction(() => onScavengeClick(army)) : undefined}
                 onHealClick={canHealArmy && army ? () => runAction(() => onHealClick(army)) : undefined}
                 onPlaceMineClick={canPlaceMine && army ? () => runAction(() => onPlaceMineClick(army)) : undefined}
+                onSmokeScreenClick={canSmokeScreen && army ? () => runAction(() => onSmokeScreenClick(army)) : undefined}
                 onFortifyClick={canFortify && army ? () => runAction(() => onFortifyClick(army)) : undefined}
                 onSetAggressiveClick={
                   army && selectedArmy?.id === army.id && army.queuedMoveTileId
@@ -508,4 +669,13 @@ export default function GridMap({
       </div>
     </div>
   );
+}
+
+function smokeAreaIdsForOrigin(tile: TileDoc) {
+  return new Set([
+    tile.id,
+    tileIdFromCoords(tile.x + 1, tile.y),
+    tileIdFromCoords(tile.x, tile.y + 1),
+    tileIdFromCoords(tile.x + 1, tile.y + 1),
+  ]);
 }

@@ -7,7 +7,6 @@ import HomePage from './pages/HomePage';
 import LobbyPage from './pages/LobbyPage';
 import GamePage from './pages/GamePage';
 import ButtonClickSound from './components/ButtonClickSound/ButtonClickSound';
-import MusicPlayer from './components/MusicPlayer/MusicPlayer';
 import HeaderBar from './components/HeaderBar/HeaderBar';
 
 export type MovementSoundMode = 'move' | 'tile';
@@ -32,6 +31,20 @@ export default function App() {
   const [unitOwnerBarEnabled, setUnitOwnerBarEnabled] = useState(
     () => localStorage.getItem('unitOwnerBarEnabled') !== 'false',
   );
+  const [attackRadiusVisible, setAttackRadiusVisible] = useState(
+    () => localStorage.getItem('attackRadiusVisible') !== 'false',
+  );
+  const [qualityTabHidden, setQualityTabHidden] = useState(
+    () => localStorage.getItem('qualityTabHidden') === 'true',
+  );
+  const [musicVolume, setMusicVolume] = useState(() => {
+    const saved = Number(localStorage.getItem('musicVolume'));
+    return Number.isFinite(saved) ? Math.min(1, Math.max(0, saved)) : 0.35;
+  });
+  const [vfxVolume, setVfxVolume] = useState(() => {
+    const saved = Number(localStorage.getItem('vfxVolume'));
+    return Number.isFinite(saved) ? Math.min(1, Math.max(0, saved)) : 0.75;
+  });
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, setUser);
@@ -63,6 +76,22 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('unitOwnerBarEnabled', String(unitOwnerBarEnabled));
   }, [unitOwnerBarEnabled]);
+
+  useEffect(() => {
+    localStorage.setItem('attackRadiusVisible', String(attackRadiusVisible));
+  }, [attackRadiusVisible]);
+
+  useEffect(() => {
+    localStorage.setItem('qualityTabHidden', String(qualityTabHidden));
+  }, [qualityTabHidden]);
+
+  useEffect(() => {
+    localStorage.setItem('musicVolume', String(musicVolume));
+  }, [musicVolume]);
+
+  useEffect(() => {
+    localStorage.setItem('vfxVolume', String(vfxVolume));
+  }, [vfxVolume]);
 
   const currentPlayer = useMemo(() => {
     if (!gameState) return null;
@@ -98,8 +127,7 @@ export default function App() {
 
   return (
     <main className="app-shell">
-      <ButtonClickSound />
-      <MusicPlayer />
+      <ButtonClickSound volume={vfxVolume} />
       <HeaderBar
         gameState={gameState}
         currentPlayerId={currentPlayer?.id}
@@ -110,12 +138,20 @@ export default function App() {
         unitTileOwnerTintEnabled={unitTileOwnerTintEnabled}
         unitTileOwnerTintIntensity={unitTileOwnerTintIntensity}
         unitOwnerBarEnabled={unitOwnerBarEnabled}
+        attackRadiusVisible={attackRadiusVisible}
+        qualityTabHidden={qualityTabHidden}
+        musicVolume={musicVolume}
+        vfxVolume={vfxVolume}
         onDevPlayerChange={setDevPlayerId}
         onDevSpawnUnitTypeChange={setDevSpawnUnitType}
         onMovementSoundModeChange={setMovementSoundMode}
         onUnitTileOwnerTintChange={setUnitTileOwnerTintEnabled}
         onUnitTileOwnerTintIntensityChange={setUnitTileOwnerTintIntensity}
         onUnitOwnerBarChange={setUnitOwnerBarEnabled}
+        onAttackRadiusVisibleChange={setAttackRadiusVisible}
+        onQualityTabHiddenChange={setQualityTabHidden}
+        onMusicVolumeChange={setMusicVolume}
+        onVfxVolumeChange={setVfxVolume}
       />
       {error && <div className="notice error">{error}</div>}
       <div className="app-content">
@@ -133,6 +169,8 @@ export default function App() {
             unitTileOwnerTintEnabled={unitTileOwnerTintEnabled}
             unitTileOwnerTintIntensity={unitTileOwnerTintIntensity}
             unitOwnerBarEnabled={unitOwnerBarEnabled}
+            attackRadiusVisible={attackRadiusVisible}
+            qualityTabHidden={qualityTabHidden}
             onDevSpawnUnitTypeChange={setDevSpawnUnitType}
           />
         )}

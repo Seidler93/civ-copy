@@ -4,6 +4,7 @@ import { devAddSupplies } from '../../firebase/gameService';
 import type { GameState, UnitTypeId } from '../../types/gameTypes';
 import type { MovementSoundMode } from '../../App';
 import GameSettings from '../GameSettings/GameSettings';
+import MusicPlayer from '../MusicPlayer/MusicPlayer';
 
 type HeaderBarProps = {
   gameState: GameState | null;
@@ -15,12 +16,20 @@ type HeaderBarProps = {
   unitTileOwnerTintEnabled: boolean;
   unitTileOwnerTintIntensity: number;
   unitOwnerBarEnabled: boolean;
+  attackRadiusVisible: boolean;
+  qualityTabHidden: boolean;
+  musicVolume: number;
+  vfxVolume: number;
   onDevPlayerChange: (playerId: string) => void;
   onDevSpawnUnitTypeChange: (unitTypeId: UnitTypeId | '') => void;
   onMovementSoundModeChange: (mode: MovementSoundMode) => void;
   onUnitTileOwnerTintChange: (enabled: boolean) => void;
   onUnitTileOwnerTintIntensityChange: (value: number) => void;
   onUnitOwnerBarChange: (enabled: boolean) => void;
+  onAttackRadiusVisibleChange: (visible: boolean) => void;
+  onQualityTabHiddenChange: (hidden: boolean) => void;
+  onMusicVolumeChange: (value: number) => void;
+  onVfxVolumeChange: (value: number) => void;
 };
 
 const compositionBuffs = [
@@ -42,12 +51,20 @@ export default function HeaderBar({
   unitTileOwnerTintEnabled,
   unitTileOwnerTintIntensity,
   unitOwnerBarEnabled,
+  attackRadiusVisible,
+  qualityTabHidden,
+  musicVolume,
+  vfxVolume,
   onDevPlayerChange,
   onDevSpawnUnitTypeChange,
   onMovementSoundModeChange,
   onUnitTileOwnerTintChange,
   onUnitTileOwnerTintIntensityChange,
   onUnitOwnerBarChange,
+  onAttackRadiusVisibleChange,
+  onQualityTabHiddenChange,
+  onMusicVolumeChange,
+  onVfxVolumeChange,
 }: HeaderBarProps) {
   const [isInfoOpen, setIsInfoOpen] = useState(false);
   const [isLeaderboardOpen, setIsLeaderboardOpen] = useState(false);
@@ -158,65 +175,107 @@ export default function HeaderBar({
           <button className="secondary info-button" type="button" onClick={() => setIsInfoOpen(true)}>
             Info
           </button>
-          {gameState?.game.status === 'active' && currentPlayerId && (
-            <div className="settings-toolbar" ref={settingsRef}>
-              <button
-                className="secondary settings-icon-button"
-                type="button"
-                onClick={() => setIsSettingsOpen((current) => !current)}
-                aria-label="Open player settings"
-              >
-                <span aria-hidden="true" />
-              </button>
-              {isSettingsOpen && (
-                <div className="settings-popover">
-                  <section className="audio-settings">
-                    <p className="eyebrow">Audio</p>
-                    <label>
-                      Movement sound
-                      <select
-                        value={movementSoundMode}
-                        onChange={(event) => onMovementSoundModeChange(event.target.value as MovementSoundMode)}
-                      >
-                        <option value="move">Once per movement</option>
-                        <option value="tile">Once per tile</option>
-                      </select>
-                    </label>
-                    <label className="checkbox-setting">
-                      <input
-                        type="checkbox"
-                        checked={unitTileOwnerTintEnabled}
-                        onChange={(event) => onUnitTileOwnerTintChange(event.target.checked)}
-                      />
-                      Tint occupied tiles
-                    </label>
-                    <label className="checkbox-setting">
-                      <input
-                        type="checkbox"
-                        checked={unitOwnerBarEnabled}
-                        onChange={(event) => onUnitOwnerBarChange(event.target.checked)}
-                      />
-                      Show owner color bar
-                    </label>
-                    <label className="range-setting">
-                      Tint intensity
-                      <span>{unitTileOwnerTintIntensity}%</span>
-                      <input
-                        type="range"
-                        min="4"
-                        max="100"
-                        value={unitTileOwnerTintIntensity}
-                        disabled={!unitTileOwnerTintEnabled}
-                        onChange={(event) => onUnitTileOwnerTintIntensityChange(Number(event.target.value))}
-                      />
-                    </label>
-                  </section>
+          <MusicPlayer volume={musicVolume} />
+          <div className="settings-toolbar" ref={settingsRef}>
+            <button
+              className="secondary settings-icon-button"
+              type="button"
+              onClick={() => setIsSettingsOpen((current) => !current)}
+              aria-label="Open settings"
+              title="Settings"
+            >
+              <img src="/settings.png" alt="" aria-hidden="true" />
+            </button>
+            {isSettingsOpen && (
+              <div className="settings-popover">
+                <section className="audio-settings">
+                  <p className="eyebrow">Audio</p>
+                  <label className="range-setting">
+                    Music
+                    <span>{Math.round(musicVolume * 100)}%</span>
+                    <input
+                      type="range"
+                      min="0"
+                      max="1"
+                      step="0.05"
+                      value={musicVolume}
+                      onChange={(event) => onMusicVolumeChange(Number(event.target.value))}
+                    />
+                  </label>
+                  <label className="range-setting">
+                    VFX
+                    <span>{Math.round(vfxVolume * 100)}%</span>
+                    <input
+                      type="range"
+                      min="0"
+                      max="1"
+                      step="0.05"
+                      value={vfxVolume}
+                      onChange={(event) => onVfxVolumeChange(Number(event.target.value))}
+                    />
+                  </label>
+                  <label>
+                    Movement sound
+                    <select
+                      value={movementSoundMode}
+                      onChange={(event) => onMovementSoundModeChange(event.target.value as MovementSoundMode)}
+                    >
+                      <option value="move">Once per movement</option>
+                      <option value="tile">Once per tile</option>
+                    </select>
+                  </label>
+                  <label className="checkbox-setting">
+                    <input
+                      type="checkbox"
+                      checked={unitTileOwnerTintEnabled}
+                      onChange={(event) => onUnitTileOwnerTintChange(event.target.checked)}
+                    />
+                    Tint occupied tiles
+                  </label>
+                  <label className="checkbox-setting">
+                    <input
+                      type="checkbox"
+                      checked={unitOwnerBarEnabled}
+                      onChange={(event) => onUnitOwnerBarChange(event.target.checked)}
+                    />
+                    Show owner color bar
+                  </label>
+                  <label className="checkbox-setting">
+                    <input
+                      type="checkbox"
+                      checked={attackRadiusVisible}
+                      onChange={(event) => onAttackRadiusVisibleChange(event.target.checked)}
+                    />
+                    Show attack radius
+                  </label>
+                  <label className="checkbox-setting">
+                    <input
+                      type="checkbox"
+                      checked={qualityTabHidden}
+                      onChange={(event) => onQualityTabHiddenChange(event.target.checked)}
+                    />
+                    Hide Quality tab
+                  </label>
+                  <label className="range-setting">
+                    Tint intensity
+                    <span>{unitTileOwnerTintIntensity}%</span>
+                    <input
+                      type="range"
+                      min="4"
+                      max="100"
+                      value={unitTileOwnerTintIntensity}
+                      disabled={!unitTileOwnerTintEnabled}
+                      onChange={(event) => onUnitTileOwnerTintIntensityChange(Number(event.target.value))}
+                    />
+                  </label>
+                </section>
+                {gameState?.game.status === 'active' && currentPlayerId && (
                   <GameSettings game={gameState.game} currentPlayerId={currentPlayerId} onMessage={setSettingsMessage} />
-                  {settingsMessage && <p className="settings-message">{settingsMessage}</p>}
-                </div>
-              )}
-            </div>
-          )}
+                )}
+                {settingsMessage && <p className="settings-message">{settingsMessage}</p>}
+              </div>
+            )}
+          </div>
         </div>
       </header>
 
@@ -337,7 +396,7 @@ export default function HeaderBar({
                   <li>Medics passively heal at round end, or can spend an action for a larger heal.</li>
                   <li>Recon squads give their unit +3 movement and reveal fog up to 8 spaces away.</li>
                   <li>Anti-Vehicle squads can place mines that punish Tanks crossing that tile.</li>
-                  <li>Artillery squads must stay solo and attack up to 8 spaces away without moving.</li>
+                  <li>Artillery squads must stay solo and attack up to 6 spaces away without moving.</li>
                   <li>Logistics squads can build bases and trenches. Logistics squads are consumed when making bases.</li>
                   <li>Ruined bases turn gray and can be reclaimed by a solo Logistics squad for 50 supplies plus half their stored upgrade value.</li>
                 </ul>
