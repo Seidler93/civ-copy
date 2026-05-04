@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import ArmyPanel from '../components/ArmyPanel/ArmyPanel';
 import BaseModal from '../components/BaseModal/BaseModal';
 import CombatLog, { type CombatLogEntry } from '../components/CombatLog/CombatLog';
@@ -15,6 +15,7 @@ import {
   combineArmies,
   devSpawnUnitAtTile,
   dismissUnitFromArmy,
+  endTurn,
   fortifyArmy,
   healArmyWithMedic,
   moveArmy,
@@ -31,7 +32,14 @@ import {
   MAX_DEPLOYED_UNITS,
 } from '../firebase/gameService';
 import type { ArmyDoc, GameState, PlayerDoc, TalentId, TileDoc, UnitTypeId } from '../types/gameTypes';
-import { canCombineArmies, canMoveArmy, getAttackStagingTile, movementPath } from '../utils/movement';
+import {
+  canAttackTile,
+  canCombineArmies,
+  canMoveArmy,
+  getAttackStagingTile,
+  manhattanDistance,
+  movementPath,
+} from '../utils/movement';
 
 interface FloatingCombatText {
   id: string;
@@ -105,6 +113,7 @@ export default function GamePage({
   const [combatLogEntries, setCombatLogEntries] = useState<CombatLogEntry[]>([]);
   const [isTalentTreeOpen, setIsTalentTreeOpen] = useState(false);
   const [busyTalentId, setBusyTalentId] = useState<TalentId | null>(null);
+  const cpuTurnKeyRef = useRef('');
 
   const selectedArmy = gameState.armies.find((army) => army.id === selectedArmyId) ?? null;
   const currentTurnPlayer = gameState.players.find((player) => player.id === gameState.game.currentTurnPlayerId) ?? null;
@@ -126,6 +135,67 @@ export default function GamePage({
     .filter((army) => army.ownerId === currentPlayer.id)
     .reduce((total, army) => total + army.units.length, 0);
   const selectedDevPlayerId = devPlayerId || currentPlayer.id;
+
+  useEffect(() => {
+    const cpuPlayer = currentTurnPlayer?.isCpu ? currentTurnPlayer : null;
+    if (!cpuPlayer || gameState.game.status !== 'active') return;
+
+    const turnKey = `${gameState.game.id}:${gameState.game.roundNumber}:${gameState.game.turnNumber}:${cpuPlayer.id}`;
+    if (cpuTurnKeyRef.current === turnKey) return;
+    cpuTurnKeyRef.current = turnKey;
+
+    setSelectedArmyId(null);
+    setTargetedAttackTileId(null);
+    setTargetedMergeTileId(null);
+    setMessage(`${cpuPlayer.name} is thinking...`);
+
+    const timer = window.setTimeout(() => {
+      void runCpuTurn(cpuPlayer);
+    }, 750);
+
+    return () => window.clearTimeout(timer);
+  }, [currentTurnPlayer, gameState]);
+
+  async function runCpuTurn(cpuPlayer: PlayerDoc) {
+    try {
+      const cpuArmies = gameState.armies.filter((army) => army.ownerId === cpuPlayer.id && army.units.length > 0);
+      const attack = findCpuAttack(cpuPlayer, cpuArmies, gameState.tiles, gameState.armies);
+      if (attack) {
+        setMessage(`${cpuPlayer.name} attacks.`);
+        showAttackFacing(attack.army.id, attack.fromTile, attack.targetTile);
+        showBulletTraces(attack.fromTile.id, attack.targetTile.id);
+        playRiflemanShotBurst(attack.army);
+        await attackTile(gameState.game.id, attack.army.id, attack.targetTile.id, cpuPlayer.id);
+        await delay(900);
+        await endTurn(gameState.game.id, cpuPlayer.id);
+        return;
+      }
+
+      const move = findCpuMove(cpuPlayer, cpuArmies, gameState.tiles, gameState.armies);
+      if (move) {
+        setMessage(`${cpuPlayer.name} advances.`);
+        const path = movementPath(move.fromTile, move.targetTile, gameState.tiles, {
+          armies: gameState.armies,
+          passThroughOwnerId: move.army.ownerId,
+        });
+        const stepCount = Math.max(1, path?.length ?? 1);
+        const durationMs = moveAnimationDuration(stepCount);
+        playMovementSound(stepCount, movementSoundMode, durationMs);
+        const result = await moveArmy(gameState.game.id, move.army.id, move.targetTile.id, cpuPlayer.id);
+        showMoveAnimation(move.targetTile, move.fromTile, durationMs);
+        if (result.triggeredMineTileId && result.mineDamage) showCombatText(result.triggeredMineTileId, `-${result.mineDamage}`);
+        if (result.sentryDamage) showCombatText(move.targetTile.id, `-${result.sentryDamage}`);
+        await delay(durationMs + 250);
+      }
+
+      await endTurn(gameState.game.id, cpuPlayer.id);
+    } catch (err) {
+      setMessage(err instanceof Error ? `CPU turn stopped: ${err.message}` : 'CPU turn stopped.');
+      window.setTimeout(() => {
+        void endTurn(gameState.game.id, cpuPlayer.id).catch(() => undefined);
+      }, 900);
+    }
+  }
 
   async function handleTileClick(tile: TileDoc, occupyingArmy: ArmyDoc | null) {
     if (import.meta.env.DEV && devSpawnUnitType) {
@@ -594,6 +664,53 @@ export default function GamePage({
       />
     </section>
   );
+}
+
+function findCpuAttack(cpuPlayer: PlayerDoc, cpuArmies: ArmyDoc[], tiles: TileDoc[], armies: ArmyDoc[]) {
+  const targetTiles = enemyTargetTiles(cpuPlayer.id, tiles, armies);
+  for (const army of cpuArmies.filter((candidate) => !candidate.hasActedThisTurn)) {
+    const fromTile = tiles.find((tile) => tile.id === army.tileId);
+    if (!fromTile) continue;
+    const targetTile = [...targetTiles]
+      .filter((tile) => canAttackTile(army, fromTile, tile, cpuPlayer.id, tiles))
+      .sort((a, b) => manhattanDistance(fromTile, a) - manhattanDistance(fromTile, b))[0];
+    if (targetTile) return { army, fromTile, targetTile };
+  }
+  return null;
+}
+
+function findCpuMove(cpuPlayer: PlayerDoc, cpuArmies: ArmyDoc[], tiles: TileDoc[], armies: ArmyDoc[]) {
+  const targetTiles = enemyTargetTiles(cpuPlayer.id, tiles, armies);
+  if (targetTiles.length === 0) return null;
+
+  let bestMove: { army: ArmyDoc; fromTile: TileDoc; targetTile: TileDoc; score: number } | null = null;
+  for (const army of cpuArmies) {
+    const fromTile = tiles.find((tile) => tile.id === army.tileId);
+    if (!fromTile) continue;
+
+    const primaryTarget = [...targetTiles].sort(
+      (a, b) => manhattanDistance(fromTile, a) - manhattanDistance(fromTile, b),
+    )[0];
+    if (!primaryTarget) continue;
+
+    for (const tile of tiles) {
+      if (!canMoveArmy(army, fromTile, tile, cpuPlayer, tiles, armies)) continue;
+      const score = manhattanDistance(tile, primaryTarget);
+      if (!bestMove || score < bestMove.score) {
+        bestMove = { army, fromTile, targetTile: tile, score };
+      }
+    }
+  }
+
+  return bestMove;
+}
+
+function enemyTargetTiles(playerId: string, tiles: TileDoc[], armies: ArmyDoc[]) {
+  const armiesById = new Map(armies.map((army) => [army.id, army]));
+  return tiles.filter((tile) => {
+    const occupyingArmy = tile.armyId ? armiesById.get(tile.armyId) : null;
+    return Boolean((occupyingArmy && occupyingArmy.ownerId !== playerId) || (tile.base && tile.base.ownerId !== playerId));
+  });
 }
 
 function delay(ms: number) {

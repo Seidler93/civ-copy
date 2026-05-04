@@ -19,7 +19,15 @@ export default function PlayerProgress({ player, deployedUnits, maxDeployedUnits
           <p className="eyebrow">Commander</p>
           <h2>Level {player.level}</h2>
         </div>
-        <button className="talent-point-button" onClick={onOpenTalents}>
+        <button
+          className={`talent-point-button ${player.talentPoints > 0 ? 'has-points' : ''}`}
+          onClick={onOpenTalents}
+          aria-label={
+            player.talentPoints > 0
+              ? `${player.talentPoints} skill point${player.talentPoints === 1 ? '' : 's'} available`
+              : 'Open skill tree'
+          }
+        >
           {player.talentPoints} SP
         </button>
       </div>

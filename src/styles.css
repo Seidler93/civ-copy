@@ -1719,6 +1719,8 @@ h2 {
 }
 
 .talent-point-button {
+  position: relative;
+  isolation: isolate;
   min-height: 32px;
   border: 1px solid rgba(255, 255, 255, 0.16);
   border-radius: 999px;
@@ -1726,6 +1728,80 @@ h2 {
   color: #f0c95d;
   background: rgba(240, 201, 93, 0.1);
   font-size: 0.8rem;
+  overflow: hidden;
+}
+
+.talent-point-button.has-points {
+  border-color: rgba(255, 223, 104, 0.9);
+  color: #15140d;
+  background: linear-gradient(135deg, #fff0a0, #f0c95d 52%, #b7e98f);
+  box-shadow:
+    0 0 0 2px rgba(240, 201, 93, 0.18),
+    0 0 18px rgba(240, 201, 93, 0.58);
+  animation: skill-point-pulse 1.55s ease-in-out infinite;
+}
+
+.talent-point-button.has-points::before,
+.talent-point-button.has-points::after {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow:
+    16px 7px 0 rgba(255, 255, 255, 0.86),
+    31px -3px 0 rgba(255, 255, 255, 0.72),
+    43px 10px 0 rgba(255, 255, 255, 0.6);
+  opacity: 0;
+  transform: translateX(-18px) scale(0.45);
+  animation: skill-point-sparkle 1.35s linear infinite;
+}
+
+.talent-point-button.has-points::before {
+  left: 2px;
+  top: 7px;
+}
+
+.talent-point-button.has-points::after {
+  left: 18px;
+  bottom: 6px;
+  animation-delay: 0.48s;
+}
+
+@keyframes skill-point-pulse {
+  0%,
+  100% {
+    transform: translateY(0);
+    box-shadow:
+      0 0 0 2px rgba(240, 201, 93, 0.18),
+      0 0 14px rgba(240, 201, 93, 0.44);
+  }
+
+  50% {
+    transform: translateY(-1px);
+    box-shadow:
+      0 0 0 3px rgba(240, 201, 93, 0.26),
+      0 0 22px rgba(240, 201, 93, 0.72);
+  }
+}
+
+@keyframes skill-point-sparkle {
+  0% {
+    opacity: 0;
+    transform: translateX(-18px) scale(0.4);
+  }
+
+  20%,
+  58% {
+    opacity: 0.75;
+  }
+
+  100% {
+    opacity: 0;
+    transform: translateX(38px) scale(0.22);
+  }
 }
 
 .xp-meter span {

@@ -1,5 +1,5 @@
 import { FormEvent, useState } from 'react';
-import { createDevSoloGame, createGame, joinGameByCode } from '../firebase/gameService';
+import { createCpuGame, createDevSoloGame, createGame, joinGameByCode } from '../firebase/gameService';
 
 interface HomePageProps {
   onGameSelected: (gameId: string) => void;
@@ -54,6 +54,19 @@ export default function HomePage({ onGameSelected }: HomePageProps) {
     }
   }
 
+  async function handleCpuGame() {
+    setBusy(true);
+    setError('');
+    try {
+      saveName();
+      onGameSelected(await createCpuGame(name));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not create CPU game.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <section className="home-page">
       <div className="home-copy">
@@ -73,6 +86,9 @@ export default function HomePage({ onGameSelected }: HomePageProps) {
         <form onSubmit={handleCreate}>
           <button disabled={busy}>{busy ? 'Working...' : 'Create Game'}</button>
         </form>
+        <button className="secondary" disabled={busy} onClick={handleCpuGame}>
+          Play vs CPU
+        </button>
         <form className="join-form" onSubmit={handleJoin}>
           <label>
             Game code

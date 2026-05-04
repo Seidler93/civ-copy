@@ -34,6 +34,7 @@ export interface PlayerDoc {
   talentPoints: number;
   talents: Partial<Record<TalentId, number>>;
   isEliminated: boolean;
+  isCpu?: boolean;
   exploredTileIds?: string[];
   joinedAt: unknown;
 }

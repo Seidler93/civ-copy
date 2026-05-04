@@ -140,6 +140,25 @@ export async function createGame(playerName: string) {
   return gameRef.id;
 }
 
+export async function createCpuGame(playerName: string) {
+  const gameId = await createGame(playerName);
+  await setDoc(doc(db, 'games', gameId, 'players', `cpu_${gameId}`), {
+    name: 'CPU Commander',
+    color: PLAYER_COLORS[1],
+    supplies: STARTING_SUPPLIES,
+    xp: 0,
+    level: 1,
+    talentPoints: 0,
+    talents: {},
+    isEliminated: false,
+    isCpu: true,
+    exploredTileIds: [],
+    joinedAt: serverTimestamp(),
+  });
+  await startGame(gameId);
+  return gameId;
+}
+
 export async function createDevSoloGame() {
   const user = await ensureAnonymousUser();
   const gameRef = await addDoc(collection(db, 'games'), {
