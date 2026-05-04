@@ -16,7 +16,22 @@ export default function LobbyPage({ gameState, currentPlayerId, onLeave }: Lobby
       <div>
         <p className="eyebrow">Game code</p>
         <h1>{gameState.game.code}</h1>
-        <p>Share this code with 1 to 3 siblings. The host starts the game once everyone is in.</p>
+        <p>Share this code with 1 to 4 other players. The host starts the game once everyone is in.</p>
+        <p className="muted">
+          {gameState.game.mode === 'timed-simultaneous'
+            ? `Mode: Timed simultaneous${gameState.game.roundDurationSeconds ? `, ${gameState.game.roundDurationSeconds}s rounds` : ''}.`
+            : 'Mode: Turn based.'}
+        </p>
+        <p className="muted">
+          {gameState.game.turnLimitRounds
+            ? `Match cap: ${gameState.game.turnLimitRounds} rounds. Highest total XP wins if nobody wins earlier by elimination.`
+            : 'Match cap: none. Last commander standing wins.'}
+        </p>
+        <p className="muted">
+          {gameState.players.length >= 5
+            ? 'Map: Grand Front, the larger battlefield built for full 5-player wars.'
+            : 'Map: Classic Front by default. If a 5th player joins, the game upgrades to the larger Grand Front map.'}
+        </p>
       </div>
       <div className="panel">
         <h2>Players</h2>

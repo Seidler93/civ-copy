@@ -15,6 +15,7 @@ export default function PlayerPanel({ players, currentPlayerId }: PlayerPanelPro
             <span className="color-dot" style={{ backgroundColor: player.color }} />
             <span className="player-name">
               {player.name} <span className="level-chip">L{player.level}</span>
+              <span className="level-chip">{player.xp} XP</span>
               {player.isEliminated && <span className="eliminated-chip">Out</span>}
             </span>
             {player.id === currentPlayerId && <span className="tag">You</span>}

@@ -4,7 +4,7 @@ import { tileIdFromCoords } from './movement';
 export const CONNECTED_BASE_SUPPLY_BONUS = 8;
 
 export function connectedBaseTiles(baseTile: TileDoc, tiles: TileDoc[], armies: ArmyDoc[] = []) {
-  if (!baseTile.base) return [];
+  if (!baseTile.base || !baseTile.base.ownerId || baseTile.base.ruined) return [];
 
   const ownerId = baseTile.base.ownerId;
   const tileById = new Map(tiles.map((tile) => [tile.id, tile]));
@@ -41,7 +41,7 @@ export function connectedBaseSupplyBonus(baseTile: TileDoc, tiles: TileDoc[], ar
 function isNetworkTile(tile: TileDoc, ownerId: string, armies: ArmyDoc[]) {
   const occupyingArmy = tile.armyId ? armies.find((army) => army.id === tile.armyId) : null;
   if (occupyingArmy && occupyingArmy.ownerId !== ownerId) return false;
-  return tile.trench?.ownerId === ownerId || tile.base?.ownerId === ownerId;
+  return tile.trench?.ownerId === ownerId || (tile.base?.ownerId === ownerId && !tile.base?.ruined);
 }
 
 function neighborIds(tile: TileDoc) {

@@ -1,7 +1,10 @@
 export type GameStatus = 'lobby' | 'active' | 'finished';
+export type GameMode = 'turn-based' | 'timed-simultaneous';
 export type TerrainType = 'plains' | 'forest' | 'hill' | 'water' | 'mountain';
 export type UnitTypeId = 'gunman' | 'recon' | 'sniper' | 'tank' | 'antiVehicle' | 'builder' | 'medic' | 'artillery';
 export type MoveDirection = 'north' | 'east' | 'south' | 'west';
+export type MoveOrderMode = 'aggressive' | 'passive';
+export type VictoryReason = 'elimination' | 'turn-limit' | 'host-ended';
 export type TalentId =
   | 'attackTraining'
   | 'coordinatedAssault'
@@ -16,12 +19,30 @@ export interface GameDoc {
   code: string;
   hostPlayerId: string;
   status: GameStatus;
+  mapId?: string;
+  mapName?: string;
+  mode: GameMode;
+  turnLimitRounds?: number | null;
+  winnerPlayerId?: string | null;
+  victoryReason?: VictoryReason | null;
+  roundDurationSeconds: number | null;
+  roundEndsAtMs?: number | null;
   currentTurnPlayerId: string | null;
   turnNumber: number;
   roundNumber: number;
   mapWidth: number;
   mapHeight: number;
+  maxPlayers?: number;
   createdAt: unknown;
+}
+
+export interface PlayerStats {
+  enemiesKilled: number;
+  basesBuilt: number;
+  basesCaptured: number;
+  basesDestroyed: number;
+  unitsLost: number;
+  unitsCreated: number;
 }
 
 export interface PlayerDoc {
@@ -34,18 +55,21 @@ export interface PlayerDoc {
   talentPoints: number;
   talents: Partial<Record<TalentId, number>>;
   isEliminated: boolean;
+  stats?: PlayerStats;
   isCpu?: boolean;
   exploredTileIds?: string[];
   joinedAt: unknown;
 }
 
 export interface BaseState {
-  ownerId: string;
+  ownerId: string | null;
   barracksLevel: number;
   unitQualityLevel: number;
   unitQualityByType?: Partial<Record<UnitTypeId, number>>;
   defenseLevel: number;
   offenseLevel?: number;
+  ruined?: boolean;
+  previousOwnerId?: string | null;
 }
 
 export interface MineState {
@@ -92,6 +116,8 @@ export interface ArmyDoc {
   lastMoveDirection?: MoveDirection;
   fortifyTurnsRemaining?: number;
   passiveHealSkippedRound?: number;
+  queuedMoveTileId?: string | null;
+  queuedMoveMode?: MoveOrderMode | null;
 }
 
 export interface GameState {

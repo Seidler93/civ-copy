@@ -1,5 +1,5 @@
 import { type CSSProperties, PointerEvent, WheelEvent, useMemo, useRef, useState } from 'react';
-import type { ArmyDoc, GameState, PlayerDoc, TileDoc } from '../../types/gameTypes';
+import type { ArmyDoc, GameState, MoveOrderMode, PlayerDoc, TileDoc } from '../../types/gameTypes';
 import { armyHasMedic } from '../../utils/combat';
 import {
   armyMustStaySolo,
@@ -44,6 +44,17 @@ interface AttackFacing {
   angleDeg: number;
 }
 
+interface ArtilleryImpact {
+  id: string;
+  tileId: string;
+}
+
+interface QueuedMovePreview {
+  tileId: string;
+  turnsRemaining: number;
+  mode: MoveOrderMode;
+}
+
 interface GridMapProps {
   gameState: GameState;
   currentPlayer: PlayerDoc;
@@ -54,6 +65,8 @@ interface GridMapProps {
   moveAnimations: MoveAnimation[];
   bulletTraces: BulletTrace[];
   attackFacings: AttackFacing[];
+  artilleryImpacts: ArtilleryImpact[];
+  queuedMovePreview: QueuedMovePreview | null;
   unitTileOwnerTintEnabled: boolean;
   unitTileOwnerTintIntensity: number;
   unitOwnerBarEnabled: boolean;
@@ -61,11 +74,14 @@ interface GridMapProps {
   onAttackClick: (tile: TileDoc) => void;
   onCombineClick: (targetArmy: ArmyDoc) => void;
   onBuildBaseClick: (builderArmy: ArmyDoc) => void;
+  onReclaimBaseClick: (builderArmy: ArmyDoc) => void;
   onBuildTrenchClick: (builderArmy: ArmyDoc) => void;
   onScavengeClick: (builderArmy: ArmyDoc) => void;
   onHealClick: (army: ArmyDoc) => void;
   onPlaceMineClick: (army: ArmyDoc) => void;
   onFortifyClick: (army: ArmyDoc) => void;
+  onSetMoveOrderMode: (army: ArmyDoc, mode: MoveOrderMode) => void;
+  onClearMoveOrder: (army: ArmyDoc) => void;
   onBaseClick: (tile: TileDoc) => void;
 }
 
@@ -79,6 +95,8 @@ export default function GridMap({
   moveAnimations,
   bulletTraces,
   attackFacings,
+  artilleryImpacts,
+  queuedMovePreview,
   unitTileOwnerTintEnabled,
   unitTileOwnerTintIntensity,
   unitOwnerBarEnabled,
@@ -86,11 +104,14 @@ export default function GridMap({
   onAttackClick,
   onCombineClick,
   onBuildBaseClick,
+  onReclaimBaseClick,
   onBuildTrenchClick,
   onScavengeClick,
   onHealClick,
   onPlaceMineClick,
   onFortifyClick,
+  onSetMoveOrderMode,
+  onClearMoveOrder,
   onBaseClick,
 }: GridMapProps) {
   const [zoom, setZoom] = useState(1);
@@ -121,6 +142,10 @@ export default function GridMap({
 
   const sortedTiles = useMemo(() => [...gameState.tiles].sort((a, b) => a.y - b.y || a.x - b.x), [gameState.tiles]);
   const tileById = useMemo(() => new Map(gameState.tiles.map((tile) => [tile.id, tile])), [gameState.tiles]);
+  const canCurrentPlayerAct =
+    gameState.game.status === 'active' &&
+    !currentPlayer.isEliminated &&
+    (gameState.game.mode === 'timed-simultaneous' || gameState.game.currentTurnPlayerId === currentPlayer.id);
 
   function clampZoom(value: number) {
     return Math.min(2.35, Math.max(0.78, Number(value.toFixed(2))));
@@ -300,21 +325,21 @@ export default function GridMap({
                 ),
             );
             const hasEnemyArmy = Boolean(army && army.ownerId !== currentPlayer.id);
-            const hasEnemyBase = Boolean(visibleBase && visibleBase.ownerId !== currentPlayer.id);
+            const hasEnemyBase = Boolean(visibleBase && !visibleBase.ruined && visibleBase.ownerId !== currentPlayer.id);
             const selectedIsMine = selectedArmy?.ownerId === currentPlayer.id;
             const isMergeable = Boolean(
-              selectedArmy &&
+                selectedArmy &&
                 army &&
                 selectedIsMine &&
                 selectedTile &&
-                gameState.game.currentTurnPlayerId === currentPlayer.id &&
+                canCurrentPlayerAct &&
                 canCombineArmies(selectedArmy, army, selectedTile, tile, currentPlayer, gameState.tiles, gameState.armies),
             );
             const canBuildBase = Boolean(
-              army &&
+                army &&
                 selectedArmy?.id === army.id &&
                 army.ownerId === currentPlayer.id &&
-                gameState.game.currentTurnPlayerId === currentPlayer.id &&
+                canCurrentPlayerAct &&
                 army.units.length === 1 &&
                 army.units[0].typeId === 'builder' &&
                 canLogisticsBuildBase(army) &&
@@ -322,80 +347,93 @@ export default function GridMap({
                 !tile.base,
             );
             const canBuildTrench = Boolean(
-              army &&
+                army &&
                 selectedArmy?.id === army.id &&
                 army.ownerId === currentPlayer.id &&
-                gameState.game.currentTurnPlayerId === currentPlayer.id &&
+                canCurrentPlayerAct &&
                 army.units.length === 1 &&
                 army.units[0].typeId === 'builder' &&
                 canLogisticsBuildTrench(army) &&
                 !army.hasActedThisTurn &&
                 !tile.trench,
             );
-            const canScavenge = Boolean(
-              army &&
+            const canReclaimBase = Boolean(
+                army &&
                 selectedArmy?.id === army.id &&
                 army.ownerId === currentPlayer.id &&
-                gameState.game.currentTurnPlayerId === currentPlayer.id &&
+                canCurrentPlayerAct &&
+                army.units.length === 1 &&
+                army.units[0].typeId === 'builder' &&
+                canLogisticsBuildBase(army) &&
+                !army.hasActedThisTurn &&
+                tile.base?.ruined,
+            );
+            const canScavenge = Boolean(
+                army &&
+                selectedArmy?.id === army.id &&
+                army.ownerId === currentPlayer.id &&
+                canCurrentPlayerAct &&
                 army.units.length === 1 &&
                 army.units[0].typeId === 'builder' &&
                 canLogisticsScavenge(army) &&
                 !army.hasActedThisTurn,
             );
             const canHealArmy = Boolean(
-              army &&
+                army &&
                 selectedArmy?.id === army.id &&
                 army.ownerId === currentPlayer.id &&
-                gameState.game.currentTurnPlayerId === currentPlayer.id &&
+                canCurrentPlayerAct &&
                 armyHasMedic(army.units) &&
                 !army.hasMovedThisTurn &&
                 !army.hasActedThisTurn,
             );
             const canPlaceMine = Boolean(
-              army &&
+                army &&
                 selectedArmy?.id === army.id &&
                 army.ownerId === currentPlayer.id &&
-                gameState.game.currentTurnPlayerId === currentPlayer.id &&
+                canCurrentPlayerAct &&
                 army.units.some((unit) => unit.typeId === 'antiVehicle') &&
                 !armyMustStaySolo(army) &&
                 !army.hasActedThisTurn &&
                 !tile.mine,
             );
             const canFortify = Boolean(
-              army &&
+                army &&
                 selectedArmy?.id === army.id &&
                 army.ownerId === currentPlayer.id &&
-                gameState.game.currentTurnPlayerId === currentPlayer.id &&
+                canCurrentPlayerAct &&
                 !army.hasActedThisTurn &&
                 (army.fortifyTurnsRemaining ?? 0) === 0,
             );
             const isReachable = Boolean(
-              selectedArmy &&
+                selectedArmy &&
                 selectedIsMine &&
                 selectedTile &&
-                gameState.game.currentTurnPlayerId === currentPlayer.id &&
+                canCurrentPlayerAct &&
                 canMoveArmy(selectedArmy, selectedTile, tile, currentPlayer, gameState.tiles, gameState.armies),
             );
             const isAttackRadius = Boolean(
-              selectedArmy &&
+                selectedArmy &&
                 selectedIsMine &&
                 selectedTile &&
-                gameState.game.currentTurnPlayerId === currentPlayer.id &&
+                canCurrentPlayerAct &&
                 !selectedArmy.hasActedThisTurn &&
                 isVisible &&
                 isTileInAttackRange(selectedArmy, selectedTile, tile, gameState.tiles),
             );
             const isAttackable = Boolean(
-              selectedArmy &&
+                selectedArmy &&
                 selectedIsMine &&
                 selectedTile &&
-                gameState.game.currentTurnPlayerId === currentPlayer.id &&
+                canCurrentPlayerAct &&
                 (hasEnemyArmy || hasEnemyBase) &&
                 getAttackStagingTile(gameState.tiles, selectedArmy, selectedTile, tile, currentPlayer, gameState.armies),
             );
             const tileCombatTexts = combatTexts.filter((entry) => entry.tileId === tile.id);
             const moveAnimation = moveAnimations.find((entry) => entry.tileId === tile.id) ?? null;
             const attackFacing = army ? attackFacings.find((entry) => entry.armyId === army.id) ?? null : null;
+            const hasArtilleryImpact = artilleryImpacts.some((entry) => entry.tileId === tile.id);
+            const isQueuedDestination = queuedMovePreview?.tileId === tile.id;
             return (
               <Tile
                 key={tile.id}
@@ -410,9 +448,11 @@ export default function GridMap({
                 isExploredButNotVisible={isDiscovered && !isVisible}
                 actionRemaining={
                   army
-                    ? army.ownerId === gameState.game.currentTurnPlayerId &&
+                    ? (gameState.game.status === 'active' &&
+                      ((gameState.game.mode === 'timed-simultaneous' && army.ownerId === currentPlayer.id) ||
+                        army.ownerId === gameState.game.currentTurnPlayerId) &&
                       movementAllowance(armyOwner ?? undefined, army) - (army.movementUsedThisTurn ?? 0) > 0 &&
-                      (army.fortifyTurnsRemaining ?? 0) === 0
+                      (army.fortifyTurnsRemaining ?? 0) === 0)
                     : null
                 }
                 hasBaseDefenseBuff={hasBaseDefenseBuff}
@@ -429,6 +469,9 @@ export default function GridMap({
                 combatTexts={tileCombatTexts}
                 moveAnimation={moveAnimation}
                 attackFacingAngle={attackFacing?.angleDeg ?? null}
+                hasArtilleryImpact={hasArtilleryImpact}
+                queuedMoveTurns={isQueuedDestination ? queuedMovePreview?.turnsRemaining ?? null : null}
+                queuedMoveMode={isQueuedDestination ? queuedMovePreview?.mode ?? null : null}
                 onClick={() => handleTileClick(tile, army)}
                 onOpenActions={army ? () => setActionMenuTileId((current) => (current === tile.id ? null : tile.id)) : undefined}
                 onAttackClick={isAttackable && targetedAttackTileId === tile.id ? () => runAction(() => onAttackClick(tile)) : undefined}
@@ -436,12 +479,28 @@ export default function GridMap({
                   isMergeable && targetedMergeTileId === tile.id && army ? () => runAction(() => onCombineClick(army)) : undefined
                 }
                 onBuildBaseClick={canBuildBase && army ? () => runAction(() => onBuildBaseClick(army)) : undefined}
+                onReclaimBaseClick={canReclaimBase && army ? () => runAction(() => onReclaimBaseClick(army)) : undefined}
                 onBuildTrenchClick={canBuildTrench && army ? () => runAction(() => onBuildTrenchClick(army)) : undefined}
                 onScavengeClick={canScavenge && army ? () => runAction(() => onScavengeClick(army)) : undefined}
                 onHealClick={canHealArmy && army ? () => runAction(() => onHealClick(army)) : undefined}
                 onPlaceMineClick={canPlaceMine && army ? () => runAction(() => onPlaceMineClick(army)) : undefined}
                 onFortifyClick={canFortify && army ? () => runAction(() => onFortifyClick(army)) : undefined}
-                onBaseClick={visibleBase?.ownerId === currentPlayer.id ? () => onBaseClick(tile) : undefined}
+                onSetAggressiveClick={
+                  army && selectedArmy?.id === army.id && army.queuedMoveTileId
+                    ? () => runAction(() => onSetMoveOrderMode(army, 'aggressive'))
+                    : undefined
+                }
+                onSetPassiveClick={
+                  army && selectedArmy?.id === army.id && army.queuedMoveTileId
+                    ? () => runAction(() => onSetMoveOrderMode(army, 'passive'))
+                    : undefined
+                }
+                onClearMoveOrderClick={
+                  army && selectedArmy?.id === army.id && army.queuedMoveTileId
+                    ? () => runAction(() => onClearMoveOrder(army))
+                    : undefined
+                }
+                onBaseClick={visibleBase?.ownerId === currentPlayer.id && !visibleBase.ruined ? () => onBaseClick(tile) : undefined}
               />
             );
           })}

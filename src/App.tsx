@@ -69,6 +69,7 @@ export default function App() {
     if (import.meta.env.DEV && gameState.game.code === 'SOLO') {
       return (
         gameState.players.find((player) => player.id === gameState.game.currentTurnPlayerId) ??
+        gameState.players.find((player) => !player.isEliminated) ??
         gameState.players[0] ??
         null
       );
@@ -122,7 +123,7 @@ export default function App() {
         {gameId && gameState?.game.status === 'lobby' && (
           <LobbyPage gameState={gameState} currentPlayerId={user.uid} onLeave={() => setGameId('')} />
         )}
-        {gameId && gameState?.game.status === 'active' && currentPlayer && (
+        {gameId && (gameState?.game.status === 'active' || gameState?.game.status === 'finished') && currentPlayer && (
           <GamePage
             gameState={gameState}
             currentPlayer={currentPlayer}

@@ -50,6 +50,7 @@ export default function HeaderBar({
   onUnitOwnerBarChange,
 }: HeaderBarProps) {
   const [isInfoOpen, setIsInfoOpen] = useState(false);
+  const [isLeaderboardOpen, setIsLeaderboardOpen] = useState(false);
   const [isDevToolsOpen, setIsDevToolsOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [devMessage, setDevMessage] = useState('');
@@ -57,6 +58,15 @@ export default function HeaderBar({
   const settingsRef = useRef<HTMLDivElement | null>(null);
   const gameCode = gameState?.game.id ?? null;
   const selectedDevPlayerId = devPlayerId || currentPlayerId || gameState?.players[0]?.id || '';
+  const leaderboardPlayers =
+    gameState?.players
+      .slice()
+      .sort((a, b) => {
+        if (b.xp !== a.xp) return b.xp - a.xp;
+        const aStats = a.stats;
+        const bStats = b.stats;
+        return (bStats?.enemiesKilled ?? 0) - (aStats?.enemiesKilled ?? 0);
+      }) ?? [];
 
   useEffect(() => {
     if (!isSettingsOpen) return undefined;
@@ -91,7 +101,7 @@ export default function HeaderBar({
     <>
       <header className="app-header">
         <div className="app-header-title">
-          <strong>Sibling Conquest</strong>
+          <strong>Grid Warfare</strong>
           {gameCode && <span>Game {gameCode}</span>}
         </div>
         <div className="app-header-actions">
@@ -140,6 +150,11 @@ export default function HeaderBar({
               )}
             </div>
           )}
+          {gameState?.players.length ? (
+            <button className="secondary info-button" type="button" onClick={() => setIsLeaderboardOpen(true)}>
+              Leaderboard
+            </button>
+          ) : null}
           <button className="secondary info-button" type="button" onClick={() => setIsInfoOpen(true)}>
             Info
           </button>
@@ -205,6 +220,74 @@ export default function HeaderBar({
         </div>
       </header>
 
+      {isLeaderboardOpen && gameState && (
+        <div className="modal-backdrop info-backdrop" role="presentation">
+          <section className="modal info-modal leaderboard-modal" role="dialog" aria-modal="true" aria-labelledby="leaderboard-title">
+            <div className="modal-heading">
+              <div>
+                <p className="eyebrow">Match Stats</p>
+                <h2 id="leaderboard-title">Leaderboard</h2>
+              </div>
+              <button className="icon-button secondary" type="button" onClick={() => setIsLeaderboardOpen(false)}>
+                X
+              </button>
+            </div>
+            <div className="leaderboard-summary">
+              <span>
+                {gameState.game.status === 'finished'
+                  ? gameState.game.victoryReason === 'turn-limit'
+                    ? 'Final result by total XP'
+                    : 'Final result'
+                  : 'Live standings by total XP'}
+              </span>
+              {gameState.game.winnerPlayerId ? (
+                <span>
+                  Winner: {gameState.players.find((player) => player.id === gameState.game.winnerPlayerId)?.name ?? 'Unknown'}
+                </span>
+              ) : null}
+            </div>
+            <div className="leaderboard-table-wrap">
+              <table className="leaderboard-table">
+                <thead>
+                  <tr>
+                    <th>Rank</th>
+                    <th>Player</th>
+                    <th>Total XP</th>
+                    <th>Kills</th>
+                    <th>Bases Built</th>
+                    <th>Bases Captured</th>
+                    <th>Bases Destroyed</th>
+                    <th>Units Lost</th>
+                    <th>Units Created</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {leaderboardPlayers.map((player, index) => (
+                    <tr key={player.id} className={player.id === gameState.game.winnerPlayerId ? 'leaderboard-winner-row' : ''}>
+                      <td>{index + 1}</td>
+                      <td>
+                        <span className="leaderboard-player-name">
+                          <span className="color-dot" style={{ backgroundColor: player.color }} />
+                          {player.name}
+                          {player.id === currentPlayerId ? ' (You)' : ''}
+                        </span>
+                      </td>
+                      <td>{player.xp}</td>
+                      <td>{player.stats?.enemiesKilled ?? 0}</td>
+                      <td>{player.stats?.basesBuilt ?? 0}</td>
+                      <td>{player.stats?.basesCaptured ?? 0}</td>
+                      <td>{player.stats?.basesDestroyed ?? 0}</td>
+                      <td>{player.stats?.unitsLost ?? 0}</td>
+                      <td>{player.stats?.unitsCreated ?? 0}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+      )}
+
       {isInfoOpen && (
         <div className="modal-backdrop info-backdrop" role="presentation">
           <section className="modal info-modal" role="dialog" aria-modal="true" aria-labelledby="info-title">
@@ -256,6 +339,7 @@ export default function HeaderBar({
                   <li>Anti-Vehicle squads can place mines that punish Tanks crossing that tile.</li>
                   <li>Artillery squads must stay solo and attack up to 8 spaces away without moving.</li>
                   <li>Logistics squads can build bases and trenches. Logistics squads are consumed when making bases.</li>
+                  <li>Ruined bases turn gray and can be reclaimed by a solo Logistics squad for 50 supplies plus half their stored upgrade value.</li>
                 </ul>
               </section>
 

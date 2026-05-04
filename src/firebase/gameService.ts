@@ -24,14 +24,18 @@ import type {
   ArmyDoc,
   AttackOutcome,
   GameDoc,
+  GameMode,
   GameState,
+  MoveOrderMode,
   MoveDirection,
   MoveOutcome,
   PlayerDoc,
+  PlayerStats,
   TileDoc,
   TalentId,
   UnitInstance,
   UnitTypeId,
+  VictoryReason,
 } from '../types/gameTypes';
 import {
   ARMY_SPACE_CAPACITY,
@@ -67,21 +71,55 @@ import {
   isSoloArtilleryArmy,
   isImpassableTerrain,
   manhattanDistance,
+  movementAllowance,
   movementCost,
+  movementPath,
   tileIdFromCoords,
 } from '../utils/movement';
 import { applyXp } from '../utils/xp';
 
-const PLAYER_COLORS = ['#d94848', '#2f80ed', '#2f9e44', '#a855f7'];
-const MAP_WIDTH = 20;
-const MAP_HEIGHT = 20;
+const PLAYER_COLORS = ['#d94848', '#2f80ed', '#2f9e44', '#a855f7', '#f08c00'];
 const STARTING_SUPPLIES = 80;
-const STARTING_POSITIONS = [
-  { x: 1, y: 1 },
-  { x: 18, y: 18 },
-  { x: 18, y: 1 },
-  { x: 1, y: 18 },
-];
+const MAX_PLAYERS = 5;
+type MapTemplateId = 'classic-front' | 'grand-front';
+
+interface MapTemplate {
+  id: MapTemplateId;
+  name: string;
+  width: number;
+  height: number;
+  startingPositions: Array<{ x: number; y: number }>;
+}
+
+const MAP_TEMPLATES: Record<MapTemplateId, MapTemplate> = {
+  'classic-front': {
+    id: 'classic-front',
+    name: 'Classic Front',
+    width: 20,
+    height: 20,
+    startingPositions: [
+      { x: 1, y: 1 },
+      { x: 18, y: 18 },
+      { x: 18, y: 1 },
+      { x: 1, y: 18 },
+    ],
+  },
+  'grand-front': {
+    id: 'grand-front',
+    name: 'Grand Front',
+    width: 28,
+    height: 28,
+    startingPositions: [
+      { x: 14, y: 2 },
+      { x: 24, y: 9 },
+      { x: 20, y: 24 },
+      { x: 8, y: 24 },
+      { x: 3, y: 9 },
+    ],
+  },
+};
+
+const DEFAULT_MAP_TEMPLATE = MAP_TEMPLATES['classic-front'];
 export const MAX_DEPLOYED_UNITS = 50;
 export const DISMISS_UNIT_MIN_COST = 3;
 export const DISMISS_UNIT_COST_RATE = 0.25;
@@ -94,6 +132,8 @@ const XP_DESTROY_BASE = 40;
 const XP_RECRUIT_UNIT = 8;
 const XP_UPGRADE_BASE = 15;
 const XP_BUILD_BASE = 30;
+const RECLAIM_BASE_FLAT_COST = 50;
+const RECLAIM_BASE_UPGRADE_COST_RATE = 0.5;
 const SUPPLIES_DESTROY_UNIT = 8;
 const SUPPLIES_DESTROY_ARMY = 20;
 const SUPPLIES_DESTROY_BASE = 45;
@@ -111,6 +151,18 @@ const FORTIFY_TURNS = 2;
 const FORTIFY_ATTACK_MULTIPLIER = 0.75;
 const FORTIFY_DEFENSE_MULTIPLIER = 1.35;
 
+export interface GameSetupOptions {
+  mode: GameMode;
+  roundDurationSeconds?: number | null;
+  turnLimitRounds?: number | null;
+}
+
+const DEFAULT_GAME_SETUP: GameSetupOptions = {
+  mode: 'turn-based',
+  roundDurationSeconds: null,
+  turnLimitRounds: null,
+};
+
 export function dismissUnitCost(unitTypeId: UnitTypeId) {
   return Math.max(DISMISS_UNIT_MIN_COST, Math.ceil(UNIT_TYPES[unitTypeId].cost * DISMISS_UNIT_COST_RATE));
 }
@@ -121,18 +173,28 @@ export async function ensureAnonymousUser() {
   return credential.user;
 }
 
-export async function createGame(playerName: string) {
+export async function createGame(playerName: string, setup: GameSetupOptions = DEFAULT_GAME_SETUP) {
   const user = await ensureAnonymousUser();
   const code = makeGameCode();
+  const normalizedSetup = normalizeGameSetup(setup);
   const gameRef = await addDoc(collection(db, 'games'), {
     code,
     hostPlayerId: user.uid,
     status: 'lobby',
+    mapId: DEFAULT_MAP_TEMPLATE.id,
+    mapName: DEFAULT_MAP_TEMPLATE.name,
+    mode: normalizedSetup.mode,
+    turnLimitRounds: normalizedSetup.turnLimitRounds,
+    winnerPlayerId: null,
+    victoryReason: null,
+    roundDurationSeconds: normalizedSetup.roundDurationSeconds,
+    roundEndsAtMs: null,
     currentTurnPlayerId: null,
     turnNumber: 0,
     roundNumber: 1,
-    mapWidth: MAP_WIDTH,
-    mapHeight: MAP_HEIGHT,
+    mapWidth: DEFAULT_MAP_TEMPLATE.width,
+    mapHeight: DEFAULT_MAP_TEMPLATE.height,
+    maxPlayers: MAX_PLAYERS,
     createdAt: serverTimestamp(),
   });
 
@@ -140,8 +202,8 @@ export async function createGame(playerName: string) {
   return gameRef.id;
 }
 
-export async function createCpuGame(playerName: string) {
-  const gameId = await createGame(playerName);
+export async function createCpuGame(playerName: string, setup: GameSetupOptions = DEFAULT_GAME_SETUP) {
+  const gameId = await createGame(playerName, setup);
   await setDoc(doc(db, 'games', gameId, 'players', `cpu_${gameId}`), {
     name: 'CPU Commander',
     color: PLAYER_COLORS[1],
@@ -151,6 +213,7 @@ export async function createCpuGame(playerName: string) {
     talentPoints: 0,
     talents: {},
     isEliminated: false,
+    stats: makeEmptyPlayerStats(),
     isCpu: true,
     exploredTileIds: [],
     joinedAt: serverTimestamp(),
@@ -165,16 +228,25 @@ export async function createDevSoloGame() {
     code: 'SOLO',
     hostPlayerId: `solo_${user.uid}_one`,
     status: 'active',
+    mapId: DEFAULT_MAP_TEMPLATE.id,
+    mapName: DEFAULT_MAP_TEMPLATE.name,
+    mode: 'turn-based',
+    turnLimitRounds: null,
+    winnerPlayerId: null,
+    victoryReason: null,
+    roundDurationSeconds: null,
+    roundEndsAtMs: null,
     currentTurnPlayerId: `solo_${user.uid}_one`,
     turnNumber: 1,
     roundNumber: 1,
-    mapWidth: MAP_WIDTH,
-    mapHeight: MAP_HEIGHT,
+    mapWidth: DEFAULT_MAP_TEMPLATE.width,
+    mapHeight: DEFAULT_MAP_TEMPLATE.height,
+    maxPlayers: MAX_PLAYERS,
     createdAt: serverTimestamp(),
   });
   const gameId = gameRef.id;
   const batch = writeBatch(db);
-  const terrain = makeTerrain();
+  const terrain = makeTerrain(DEFAULT_MAP_TEMPLATE);
   const devTiles = terrain.map((tile) => ({ ...tile }));
   const devArmies: ArmyDoc[] = [];
   const soloPlayers = [
@@ -196,21 +268,22 @@ export async function createDevSoloGame() {
       talentPoints: 0,
       talents: {},
       isEliminated: false,
+      stats: makeEmptyPlayerStats(),
       joinedAt: serverTimestamp(),
     });
-    const start = STARTING_POSITIONS[player.startIndex];
+    const start = DEFAULT_MAP_TEMPLATE.startingPositions[player.startIndex];
     const tileId = tileIdFromCoords(start.x, start.y);
     const armyId = `army_${player.id}_start`;
     batch.update(doc(db, 'games', gameId, 'tiles', tileId), {
       ownerId: player.id,
       armyId,
-      base: { ownerId: player.id, barracksLevel: 1, unitQualityLevel: 1, defenseLevel: 1 },
+      base: makeOwnedBase(player.id),
     });
     const startTile = devTiles.find((tile) => tile.id === tileId);
     if (startTile) {
       startTile.ownerId = player.id;
       startTile.armyId = armyId;
-      startTile.base = { ownerId: player.id, barracksLevel: 1, unitQualityLevel: 1, defenseLevel: 1 };
+      startTile.base = makeOwnedBase(player.id);
     }
     const startArmy: ArmyDoc = {
       id: armyId,
@@ -221,6 +294,8 @@ export async function createDevSoloGame() {
       hasActedThisTurn: false,
       movementUsedThisTurn: 0,
       lastMoveDirection: player.startIndex === 0 ? 'east' : 'west',
+      queuedMoveTileId: null,
+      queuedMoveMode: null,
     };
     batch.set(doc(db, 'games', gameId, 'armies', armyId), {
       ownerId: startArmy.ownerId,
@@ -230,9 +305,11 @@ export async function createDevSoloGame() {
       hasActedThisTurn: startArmy.hasActedThisTurn,
       movementUsedThisTurn: startArmy.movementUsedThisTurn,
       lastMoveDirection: startArmy.lastMoveDirection,
+      queuedMoveTileId: startArmy.queuedMoveTileId,
+      queuedMoveMode: startArmy.queuedMoveMode,
     });
     devArmies.push(startArmy);
-    const builderTileId = tileIdFromCoords(start.x + (start.x < MAP_WIDTH / 2 ? 1 : -1), start.y);
+    const builderTileId = builderTileIdForStart(start, DEFAULT_MAP_TEMPLATE);
     const builderArmyId = `army_${player.id}_builder`;
     batch.update(doc(db, 'games', gameId, 'tiles', builderTileId), { armyId: builderArmyId });
     const builderTile = devTiles.find((tile) => tile.id === builderTileId);
@@ -246,6 +323,8 @@ export async function createDevSoloGame() {
       hasActedThisTurn: false,
       movementUsedThisTurn: 0,
       lastMoveDirection: player.startIndex === 0 ? 'east' : 'west',
+      queuedMoveTileId: null,
+      queuedMoveMode: null,
     };
     batch.set(doc(db, 'games', gameId, 'armies', builderArmyId), {
       ownerId: builderArmy.ownerId,
@@ -255,6 +334,8 @@ export async function createDevSoloGame() {
       hasActedThisTurn: builderArmy.hasActedThisTurn,
       movementUsedThisTurn: builderArmy.movementUsedThisTurn,
       lastMoveDirection: builderArmy.lastMoveDirection,
+      queuedMoveTileId: builderArmy.queuedMoveTileId,
+      queuedMoveMode: builderArmy.queuedMoveMode,
     });
     devArmies.push(builderArmy);
   });
@@ -303,8 +384,11 @@ export async function devSpawnUnitAtTile(gameId: string, playerId: string, unitT
       hasActedThisTurn: false,
       movementUsedThisTurn: 0,
       lastMoveDirection: 'south',
+      queuedMoveTileId: null,
+      queuedMoveMode: null,
     });
     transaction.update(tileRef, { armyId: armyRef.id });
+    transaction.update(playerRef, { stats: mergedPlayerStats(player, { unitsCreated: 1 }) });
 
     return `Spawned ${UNIT_TYPES[unitTypeId].name} for ${player.name} at ${tile.x}, ${tile.y}.`;
   });
@@ -319,7 +403,7 @@ export async function joinGameByCode(code: string, playerName: string) {
   const gameDoc = gameSnapshot.docs[0];
   const playersSnapshot = await getDocs(collection(db, 'games', gameDoc.id, 'players'));
   if (playersSnapshot.docs.some((player) => player.id === user.uid)) return gameDoc.id;
-  if (playersSnapshot.size >= 4) throw new Error('This game already has 4 players.');
+  if (playersSnapshot.size >= MAX_PLAYERS) throw new Error(`This game already has ${MAX_PLAYERS} players.`);
 
   await createPlayer(gameDoc.id, user, playerName, playersSnapshot.size);
   return gameDoc.id;
@@ -378,13 +462,18 @@ export function subscribeToGame(gameId: string, onChange: (state: GameState) => 
 }
 
 export async function startGame(gameId: string) {
+  const gameRef = doc(db, 'games', gameId);
+  const gameSnap = await getDoc(gameRef);
+  if (!gameSnap.exists()) throw new Error('Game not found.');
+  const game = { id: gameSnap.id, ...gameSnap.data() } as GameDoc;
   const playersSnapshot = await getDocs(query(collection(db, 'games', gameId, 'players'), orderBy('joinedAt')));
   const players = playersSnapshot.docs.map((player) => ({ id: player.id, ...player.data() }) as PlayerDoc);
   if (players.length < 2) throw new Error('Start needs at least 2 players.');
+  if (players.length > MAX_PLAYERS) throw new Error(`This map supports up to ${MAX_PLAYERS} players.`);
+  const mapTemplate = chooseMapTemplateForPlayerCount(players.length);
 
   const batch = writeBatch(db);
-  const gameRef = doc(db, 'games', gameId);
-  const terrain = makeTerrain();
+  const terrain = makeTerrain(mapTemplate);
   const startTiles = terrain.map((tile) => ({ ...tile }));
   const startArmies: ArmyDoc[] = [];
 
@@ -393,20 +482,20 @@ export async function startGame(gameId: string) {
   });
 
   players.forEach((player, index) => {
-    const start = STARTING_POSITIONS[index];
+    const start = mapTemplate.startingPositions[index];
     const tileId = tileIdFromCoords(start.x, start.y);
     const armyId = `army_${player.id}_start`;
     const tileRef = doc(db, 'games', gameId, 'tiles', tileId);
     batch.update(tileRef, {
       ownerId: player.id,
       armyId,
-      base: { ownerId: player.id, barracksLevel: 1, unitQualityLevel: 1, defenseLevel: 1 },
+      base: makeOwnedBase(player.id),
     });
     const startTile = startTiles.find((tile) => tile.id === tileId);
     if (startTile) {
       startTile.ownerId = player.id;
       startTile.armyId = armyId;
-      startTile.base = { ownerId: player.id, barracksLevel: 1, unitQualityLevel: 1, defenseLevel: 1 };
+      startTile.base = makeOwnedBase(player.id);
     }
     const startArmy: ArmyDoc = {
       id: armyId,
@@ -416,6 +505,8 @@ export async function startGame(gameId: string) {
       hasMovedThisTurn: false,
       hasActedThisTurn: false,
       movementUsedThisTurn: 0,
+      queuedMoveTileId: null,
+      queuedMoveMode: null,
     };
     batch.set(doc(db, 'games', gameId, 'armies', armyId), {
       ownerId: startArmy.ownerId,
@@ -424,9 +515,11 @@ export async function startGame(gameId: string) {
       hasMovedThisTurn: startArmy.hasMovedThisTurn,
       hasActedThisTurn: startArmy.hasActedThisTurn,
       movementUsedThisTurn: startArmy.movementUsedThisTurn,
+      queuedMoveTileId: startArmy.queuedMoveTileId,
+      queuedMoveMode: startArmy.queuedMoveMode,
     });
     startArmies.push(startArmy);
-    const builderTileId = tileIdFromCoords(start.x + (start.x < MAP_WIDTH / 2 ? 1 : -1), start.y);
+    const builderTileId = builderTileIdForStart(start, mapTemplate);
     const builderArmyId = `army_${player.id}_builder`;
     batch.update(doc(db, 'games', gameId, 'tiles', builderTileId), { armyId: builderArmyId });
     const builderTile = startTiles.find((tile) => tile.id === builderTileId);
@@ -439,6 +532,8 @@ export async function startGame(gameId: string) {
       hasMovedThisTurn: false,
       hasActedThisTurn: false,
       movementUsedThisTurn: 0,
+      queuedMoveTileId: null,
+      queuedMoveMode: null,
     };
     batch.set(doc(db, 'games', gameId, 'armies', builderArmyId), {
       ownerId: builderArmy.ownerId,
@@ -447,6 +542,8 @@ export async function startGame(gameId: string) {
       hasMovedThisTurn: builderArmy.hasMovedThisTurn,
       hasActedThisTurn: builderArmy.hasActedThisTurn,
       movementUsedThisTurn: builderArmy.movementUsedThisTurn,
+      queuedMoveTileId: builderArmy.queuedMoveTileId,
+      queuedMoveMode: builderArmy.queuedMoveMode,
     });
     startArmies.push(builderArmy);
   });
@@ -459,9 +556,17 @@ export async function startGame(gameId: string) {
 
   batch.update(gameRef, {
     status: 'active',
-    currentTurnPlayerId: players[0].id,
+    mapId: mapTemplate.id,
+    mapName: mapTemplate.name,
+    winnerPlayerId: null,
+    victoryReason: null,
+    currentTurnPlayerId: isSimultaneousGame(game) ? null : players[0].id,
     turnNumber: 1,
     roundNumber: 1,
+    mapWidth: mapTemplate.width,
+    mapHeight: mapTemplate.height,
+    maxPlayers: MAX_PLAYERS,
+    roundEndsAtMs: isSimultaneousGame(game) ? nextRoundEndsAtMs(game.roundDurationSeconds) : null,
   });
 
   await batch.commit();
@@ -490,14 +595,18 @@ export async function resetGameToLobby(gameId: string, playerId: string) {
       talentPoints: 0,
       talents: {},
       isEliminated: false,
+      stats: makeEmptyPlayerStats(),
       exploredTileIds: [],
     });
   });
   batch.update(gameRef, {
     status: 'lobby',
+    winnerPlayerId: null,
+    victoryReason: null,
     currentTurnPlayerId: null,
     turnNumber: 0,
     roundNumber: 1,
+    roundEndsAtMs: null,
   });
 
   await batch.commit();
@@ -546,13 +655,23 @@ export async function backOutOfGame(gameId: string, playerId: string) {
 
   const activePlayers = players.filter((player) => !player.isEliminated);
   const remainingActivePlayers = activePlayers.filter((player) => player.id !== playerId);
-  if (game.currentTurnPlayerId === playerId || remainingActivePlayers.length <= 1) {
-    const currentIndex = activePlayers.findIndex((player) => player.id === playerId);
-    const nextPlayer =
-      remainingActivePlayers.find((_, index) => index >= currentIndex) ?? remainingActivePlayers[0] ?? null;
+  const eliminationWinner = remainingActivePlayers[0] ?? null;
+  if (isSimultaneousGame(game)) {
+      batch.update(gameRef, {
+        ...(remainingActivePlayers.length <= 1 && game.status === 'active'
+          ? finishGameUpdates(game, eliminationWinner?.id ?? null, 'elimination')
+          : { status: game.status, roundEndsAtMs: game.roundEndsAtMs ?? null }),
+        currentTurnPlayerId: null,
+      });
+    } else if (game.currentTurnPlayerId === playerId || remainingActivePlayers.length <= 1) {
+      const currentIndex = activePlayers.findIndex((player) => player.id === playerId);
+      const nextPlayer =
+        remainingActivePlayers.find((_, index) => index >= currentIndex) ?? remainingActivePlayers[0] ?? null;
     batch.update(gameRef, {
-      status: remainingActivePlayers.length <= 1 && game.status === 'active' ? 'finished' : game.status,
-      currentTurnPlayerId: nextPlayer?.id ?? null,
+      ...(remainingActivePlayers.length <= 1 && game.status === 'active'
+        ? finishGameUpdates(game, eliminationWinner?.id ?? null, 'elimination')
+        : { status: game.status }),
+      currentTurnPlayerId: remainingActivePlayers.length <= 1 ? null : nextPlayer?.id ?? null,
       turnNumber: game.currentTurnPlayerId === playerId ? game.turnNumber + 1 : game.turnNumber,
       roundNumber:
         game.currentTurnPlayerId === playerId && currentIndex === activePlayers.length - 1
@@ -595,7 +714,7 @@ export async function moveArmy(gameId: string, armyId: string, targetTileId: str
     const armiesSnapshot = await getDocs(collection(db, 'games', gameId, 'armies'));
     const armies = armiesSnapshot.docs.map((armyDoc) => ({ id: armyDoc.id, ...armyDoc.data() }) as ArmyDoc);
 
-    if (game.currentTurnPlayerId !== playerId) throw new Error('It is not your turn.');
+    if (!canPlayerActInGame(game, playerId)) throw new Error(actionUnavailableMessage(game, 'It is not your turn.'));
     if (army.ownerId !== playerId) throw new Error('You do not control that unit.');
     if ((army.fortifyTurnsRemaining ?? 0) > 0) throw new Error('This unit is fortified and cannot move.');
     if (!canMoveArmy(army, fromTile, targetTile, player, tiles, armies)) throw new Error('That move is not allowed.');
@@ -631,6 +750,7 @@ export async function moveArmy(gameId: string, armyId: string, targetTileId: str
     const sentryLosses = sentryAttacks.reduce((total, entry) => total + entry.offenseConfig.damage, 0);
     const sentryDamage = sentryLosses * 10;
     const finalUnits = sentryLosses > 0 ? removeUnitLosses(movedUnits, sentryLosses, 'defender') : movedUnits;
+    const unitsLost = Math.max(0, army.units.length - finalUnits.length);
     const lastMoveDirection = directionFromTiles(fromTile, targetTile);
     const nextTiles = tiles.map((tile) => {
       if (tile.id === fromTile.id) return { ...tile, armyId: null };
@@ -651,7 +771,7 @@ export async function moveArmy(gameId: string, armyId: string, targetTileId: str
     if (movedUnits.length === 0 || finalUnits.length === 0) {
       transaction.update(targetTileRef, { armyId: null, mine: mineTriggers ? null : targetTile.mine });
       transaction.delete(armyRef);
-      transaction.update(playerRef, { exploredTileIds: nextExploredTileIds });
+      transaction.update(playerRef, { exploredTileIds: nextExploredTileIds, stats: mergedPlayerStats(player, { unitsLost }) });
       if (movedUnits.length > 0 && sentryDamage > 0) {
         return {
           message: `Unit moved to ${targetTile.x}, ${targetTile.y} and was destroyed by base sentry fire for ${sentryDamage} damage.`,
@@ -676,8 +796,10 @@ export async function moveArmy(gameId: string, armyId: string, targetTileId: str
       hasMovedThisTurn: true,
       movementUsedThisTurn: (army.movementUsedThisTurn ?? 0) + moveCost,
       lastMoveDirection,
+      queuedMoveTileId: null,
+      queuedMoveMode: null,
     });
-    transaction.update(playerRef, { exploredTileIds: nextExploredTileIds });
+    transaction.update(playerRef, { exploredTileIds: nextExploredTileIds, stats: mergedPlayerStats(player, { unitsLost }) });
 
     return {
       message:
@@ -727,7 +849,7 @@ export async function combineArmies(gameId: string, sourceArmyId: string, target
     const tiles = tilesSnapshot.docs.map((tileDoc) => ({ id: tileDoc.id, ...tileDoc.data() }) as TileDoc);
     const armiesSnapshot = await getDocs(collection(db, 'games', gameId, 'armies'));
     const armies = armiesSnapshot.docs.map((armyDoc) => ({ id: armyDoc.id, ...armyDoc.data() }) as ArmyDoc);
-    if (game.currentTurnPlayerId !== playerId) throw new Error('It is not your turn.');
+    if (!canPlayerActInGame(game, playerId)) throw new Error(actionUnavailableMessage(game, 'It is not your turn.'));
     if (!canCombineArmies(sourceArmy, targetArmy, sourceTile, targetTile, player, tiles, armies)) {
       throw new Error('Those units cannot combine.');
     }
@@ -739,6 +861,8 @@ export async function combineArmies(gameId: string, sourceArmyId: string, target
       units: combinedUnits,
       hasMovedThisTurn: true,
       hasActedThisTurn: targetArmy.hasActedThisTurn,
+      queuedMoveTileId: null,
+      queuedMoveMode: null,
     });
 
     return {
@@ -767,7 +891,7 @@ export async function dismissUnitFromArmy(gameId: string, armyId: string, unitId
     const army = { id: armySnap.id, ...armySnap.data() } as ArmyDoc;
     const player = { id: playerSnap.id, ...playerSnap.data() } as PlayerDoc;
     const unit = army.units.find((candidate) => candidate.id === unitId);
-    if (game.currentTurnPlayerId !== playerId) throw new Error('You can only dismiss squads during your turn.');
+    if (!canPlayerActInGame(game, playerId)) throw new Error(actionUnavailableMessage(game, 'You can only dismiss squads during your turn.'));
     if (army.ownerId !== playerId) throw new Error('You do not control that unit.');
     if (!unit) throw new Error('That squad is no longer in this unit.');
 
@@ -800,15 +924,30 @@ export async function dismissUnitFromArmy(gameId: string, armyId: string, unitId
       isEliminated: isNowEliminated ? true : player.isEliminated,
     });
 
-    if (isNowEliminated) {
+    if (isNowEliminated && isSimultaneousGame(game)) {
+      const remainingPlayers = players.filter((candidate) => !candidate.isEliminated && candidate.id !== playerId);
+      transaction.update(gameRef, {
+        ...(remainingUnits.length === 0 && remainingPlayers.length <= 1
+          ? finishGameUpdates(game, remainingPlayers[0]?.id ?? null, 'elimination')
+          : { status: game.status, roundEndsAtMs: game.roundEndsAtMs ?? null }),
+        currentTurnPlayerId: null,
+      });
+    } else if (isNowEliminated) {
       const activePlayers = players.filter((candidate) => !candidate.isEliminated);
       const remainingActivePlayers = activePlayers.filter((candidate) => candidate.id !== playerId);
       const currentIndex = activePlayers.findIndex((candidate) => candidate.id === playerId);
       const nextPlayer =
         remainingActivePlayers.find((_, index) => index >= currentIndex) ?? remainingActivePlayers[0] ?? null;
       transaction.update(gameRef, {
-        status: remainingActivePlayers.length <= 1 && game.status === 'active' ? 'finished' : game.status,
-        currentTurnPlayerId: game.currentTurnPlayerId === playerId ? nextPlayer?.id ?? null : game.currentTurnPlayerId,
+        ...(remainingActivePlayers.length <= 1 && game.status === 'active'
+          ? finishGameUpdates(game, remainingActivePlayers[0]?.id ?? null, 'elimination')
+          : { status: game.status }),
+        currentTurnPlayerId:
+          remainingActivePlayers.length <= 1
+            ? null
+            : game.currentTurnPlayerId === playerId
+              ? nextPlayer?.id ?? null
+              : game.currentTurnPlayerId,
         turnNumber: game.currentTurnPlayerId === playerId ? game.turnNumber + 1 : game.turnNumber,
         roundNumber:
           game.currentTurnPlayerId === playerId && currentIndex === activePlayers.length - 1
@@ -843,7 +982,7 @@ export async function separateUnitFromArmy(gameId: string, armyId: string, unitI
     const army = { id: armySnap.id, ...armySnap.data() } as ArmyDoc;
     const player = { id: playerSnap.id, ...playerSnap.data() } as PlayerDoc;
     const unit = army.units.find((candidate) => candidate.id === unitId);
-    if (game.currentTurnPlayerId !== playerId) throw new Error('You can only separate squads during your turn.');
+    if (!canPlayerActInGame(game, playerId)) throw new Error(actionUnavailableMessage(game, 'You can only separate squads during your turn.'));
     if (army.ownerId !== playerId) throw new Error('You do not control that unit.');
     if (!unit) throw new Error('That squad is no longer in this unit.');
     if (army.units.length <= 1) throw new Error('That squad is already operating alone.');
@@ -875,8 +1014,10 @@ export async function separateUnitFromArmy(gameId: string, armyId: string, unitI
       hasActedThisTurn: army.hasActedThisTurn,
       movementUsedThisTurn: army.movementUsedThisTurn ?? 0,
       lastMoveDirection: army.lastMoveDirection ?? 'south',
+      queuedMoveTileId: null,
+      queuedMoveMode: null,
     };
-    transaction.update(armyRef, { units: remainingUnits });
+    transaction.update(armyRef, { units: remainingUnits, queuedMoveTileId: null, queuedMoveMode: null });
     transaction.set(newArmyRef, {
       ownerId: newArmy.ownerId,
       tileId: newArmy.tileId,
@@ -885,6 +1026,8 @@ export async function separateUnitFromArmy(gameId: string, armyId: string, unitI
       hasActedThisTurn: newArmy.hasActedThisTurn,
       movementUsedThisTurn: newArmy.movementUsedThisTurn,
       lastMoveDirection: newArmy.lastMoveDirection,
+      queuedMoveTileId: newArmy.queuedMoveTileId,
+      queuedMoveMode: newArmy.queuedMoveMode,
     });
     transaction.update(spawnTarget.ref, { armyId: newArmyRef.id });
 
@@ -934,7 +1077,7 @@ export async function attackTile(gameId: string, attackerArmyId: string, targetT
     if (!fromTileSnap.exists()) throw new Error('Attacking unit tile is missing.');
     const fromTile = { id: fromTileSnap.id, ...fromTileSnap.data() } as TileDoc;
 
-    if (game.currentTurnPlayerId !== playerId) throw new Error('It is not your turn.');
+    if (!canPlayerActInGame(game, playerId)) throw new Error(actionUnavailableMessage(game, 'It is not your turn.'));
 
     let defender: ArmyDoc | null = null;
     let defenderRef: ReturnType<typeof doc> | null = null;
@@ -946,10 +1089,12 @@ export async function attackTile(gameId: string, attackerArmyId: string, targetT
       if (defender.ownerId === playerId) throw new Error('You cannot attack your own unit.');
     }
 
-    if (!defender && (!targetTile.base || targetTile.base.ownerId === playerId)) {
+    if (!defender && (!targetTile.base || targetTile.base.ruined || targetTile.base.ownerId === playerId)) {
       throw new Error('There is no enemy target on that tile.');
     }
-    const defendingOwnerId = defender?.ownerId ?? (targetTile.base?.ownerId !== playerId ? targetTile.base?.ownerId : null);
+    const defendingOwnerId =
+      defender?.ownerId ??
+      (targetTile.base && !targetTile.base.ruined && targetTile.base.ownerId !== playerId ? targetTile.base.ownerId : null);
     let defendingPlayer: PlayerDoc | null = null;
     if (defendingOwnerId) {
       const defendingPlayerSnap = await transaction.get(doc(db, 'games', gameId, 'players', defendingOwnerId));
@@ -976,7 +1121,7 @@ export async function attackTile(gameId: string, attackerArmyId: string, targetT
       const supportTile = allTiles.find((tile) => tile.id === supportArmy.tileId);
       return Boolean(supportTile && manhattanDistance(fromTile, supportTile) === 1);
     });
-    const defendingBase = targetTile.base?.ownerId !== playerId ? targetTile.base : null;
+    const defendingBase = targetTile.base && !targetTile.base.ruined && targetTile.base.ownerId !== playerId ? targetTile.base : null;
     const attackTalentBonus = (player.talents.attackTraining ?? 0) * 0.05;
     const supportTalentBonus = supportedByAdjacentArmy ? 0.1 + (player.talents.coordinatedAssault ?? 0) * 0.02 : 0;
     const defenseTalentBonus = (defendingPlayer?.talents.defensiveDrills ?? 0) * 0.05;
@@ -1036,6 +1181,8 @@ export async function attackTile(gameId: string, attackerArmyId: string, targetT
       transaction.update(attackerRef, {
         units: leveledAttackers,
         hasActedThisTurn: true,
+        queuedMoveTileId: null,
+        queuedMoveMode: null,
       });
     }
 
@@ -1043,13 +1190,13 @@ export async function attackTile(gameId: string, attackerArmyId: string, targetT
       transaction.delete(defenderRef);
       transaction.update(targetTileRef, {
         armyId: null,
-        base: combat.baseDestroyed ? null : targetTile.base,
+        base: combat.baseDestroyed ? ruinBase(targetTile.base) : targetTile.base,
         ownerId: combat.baseDestroyed ? null : targetTile.ownerId,
       });
     } else if (defender && defenderRef) {
       transaction.update(defenderRef, { units: remainingDefenders });
     } else if (combat.baseDestroyed) {
-      transaction.update(targetTileRef, { base: null, ownerId: null });
+      transaction.update(targetTileRef, { base: ruinBase(targetTile.base), ownerId: null });
     }
 
     const [playersSnapshot, tilesSnapshot, armiesSnapshot] = await Promise.all([
@@ -1064,7 +1211,8 @@ export async function attackTile(gameId: string, attackerArmyId: string, targetT
         return {
           ...tileData,
           armyId: defender && remainingDefenders.length === 0 ? null : tileData.armyId,
-          base: combat.baseDestroyed ? null : tileData.base,
+          base: combat.baseDestroyed ? ruinBase(tileData.base) : tileData.base,
+          ownerId: combat.baseDestroyed ? null : tileData.ownerId,
         };
       }
       if (tileData.id === fromTile.id && remainingAttackers.length === 0) return { ...tileData, armyId: null };
@@ -1081,9 +1229,23 @@ export async function attackTile(gameId: string, attackerArmyId: string, targetT
     eliminatedPlayerIds.forEach((eliminatedPlayerId) => {
       transaction.update(doc(db, 'games', gameId, 'players', eliminatedPlayerId), { isEliminated: true });
     });
+    const remainingActivePlayers = players.filter(
+      (candidate) => !candidate.isEliminated && !eliminatedPlayerIds.includes(candidate.id),
+    );
+    if (remainingActivePlayers.length <= 1 && game.status === 'active') {
+      transaction.update(gameRef, {
+        ...finishGameUpdates(game, remainingActivePlayers[0]?.id ?? null, 'elimination'),
+        currentTurnPlayerId: null,
+      });
+    }
 
     transaction.update(playerRef, {
       supplies: player.supplies + suppliesGained,
+      stats: mergedPlayerStats(player, {
+        enemiesKilled: combat.defenderLosses,
+        basesDestroyed: combat.baseDestroyed ? 1 : 0,
+        unitsLost: combat.attackerLosses,
+      }),
       ...applyXp(player, xpGained),
     });
     if (defender && defenderSuppliesGained > 0) {
@@ -1091,8 +1253,18 @@ export async function attackTile(gameId: string, attackerArmyId: string, targetT
       if (defenderPlayer) {
         transaction.update(doc(db, 'games', gameId, 'players', defender.ownerId), {
           supplies: defenderPlayer.supplies + defenderSuppliesGained,
+          stats: mergedPlayerStats(defenderPlayer, {
+            enemiesKilled: combat.attackerLosses,
+            unitsLost: combat.defenderLosses,
+          }),
         });
       }
+    } else if (defendingPlayer && combat.defenderLosses > 0) {
+      transaction.update(doc(db, 'games', gameId, 'players', defendingOwnerId!), {
+        stats: mergedPlayerStats(defendingPlayer, {
+          unitsLost: combat.defenderLosses,
+        }),
+      });
     }
 
     const resultLine =
@@ -1107,7 +1279,7 @@ export async function attackTile(gameId: string, attackerArmyId: string, targetT
     const message = remainingAttackers.length === 0
       ? `${resultLine}${supportMessage}${defenderRewardMessage} Your attacking unit was destroyed.`
       : combat.baseDestroyed
-        ? `${resultLine}${supportMessage} Enemy base destroyed.`
+        ? `${resultLine}${supportMessage} Enemy base ruined.`
         : defender && remainingDefenders.length === 0
           ? `${resultLine}${supportMessage} Enemy unit destroyed.`
           : `${resultLine}${supportMessage}`;
@@ -1157,7 +1329,7 @@ export async function recruitUnitAtBase(gameId: string, baseTileId: string, unit
     const effectiveBaseTiles = allTiles.map((tile) => (tile.id === baseTile.id ? baseTile : tile));
     const sharedBarracksLevel = effectiveBarracksLevel(baseTile, effectiveBaseTiles, allArmies);
 
-    if (game.currentTurnPlayerId !== playerId) throw new Error('You can only recruit during your turn.');
+    if (!canPlayerActInGame(game, playerId)) throw new Error(actionUnavailableMessage(game, 'You can only recruit during your turn.'));
     if (!baseTile.base || baseTile.base.ownerId !== playerId) throw new Error('You do not control that base.');
     if (!isUnitUnlocked(unitTypeId, sharedBarracksLevel)) throw new Error(`${unitType.name} is not unlocked here.`);
 
@@ -1200,6 +1372,8 @@ export async function recruitUnitAtBase(gameId: string, baseTileId: string, unit
         hasMovedThisTurn: false,
         hasActedThisTurn: false,
         movementUsedThisTurn: 0,
+        queuedMoveTileId: null,
+        queuedMoveMode: null,
       });
       transaction.update(spawnTarget.ref, { armyId: armyRef.id });
     } else if (unitTypeId === 'builder' || unitTypeId === 'artillery' || unitTypeId === 'recon') {
@@ -1231,6 +1405,7 @@ export async function recruitUnitAtBase(gameId: string, baseTileId: string, unit
 
     transaction.update(playerRef, {
       supplies: player.supplies - cost,
+      stats: mergedPlayerStats(player, { unitsCreated: 1 }),
       ...applyXp(player, XP_RECRUIT_UNIT),
     });
 
@@ -1271,7 +1446,7 @@ export async function recruitUnitCompositionAtBase(
     const effectiveBaseTiles = allTiles.map((tile) => (tile.id === baseTile.id ? baseTile : tile));
     const sharedBarracksLevel = effectiveBarracksLevel(baseTile, effectiveBaseTiles, allArmies);
 
-    if (game.currentTurnPlayerId !== playerId) throw new Error('You can only recruit during your turn.');
+    if (!canPlayerActInGame(game, playerId)) throw new Error(actionUnavailableMessage(game, 'You can only recruit during your turn.'));
     if (!baseTile.base || baseTile.base.ownerId !== playerId) throw new Error('You do not control that base.');
 
     const lockedUnit = composition.units.find((unitTypeId) => !isUnitUnlocked(unitTypeId, sharedBarracksLevel));
@@ -1317,10 +1492,13 @@ export async function recruitUnitCompositionAtBase(
       hasMovedThisTurn: false,
       hasActedThisTurn: false,
       movementUsedThisTurn: 0,
+      queuedMoveTileId: null,
+      queuedMoveMode: null,
     });
     transaction.update(spawnTarget.ref, { armyId: armyRef.id });
     transaction.update(playerRef, {
       supplies: player.supplies - cost,
+      stats: mergedPlayerStats(player, { unitsCreated: composition.units.length }),
       ...applyXp(player, XP_RECRUIT_UNIT * composition.units.length),
     });
 
@@ -1351,7 +1529,7 @@ export async function buildBaseWithBuilder(gameId: string, builderArmyId: string
     if (!tileSnap.exists()) throw new Error('Logistics tile is missing.');
     const tile = { id: tileSnap.id, ...tileSnap.data() } as TileDoc;
 
-    if (game.currentTurnPlayerId !== playerId) throw new Error('You can only build during your turn.');
+    if (!canPlayerActInGame(game, playerId)) throw new Error(actionUnavailableMessage(game, 'You can only build during your turn.'));
     if (builderArmy.ownerId !== playerId) throw new Error('You do not control that logistics squad.');
     if (builderArmy.hasActedThisTurn) throw new Error('That logistics squad has already acted this turn.');
     if (builderArmy.units.length !== 1 || builderArmy.units[0].typeId !== 'builder') {
@@ -1369,16 +1547,72 @@ export async function buildBaseWithBuilder(gameId: string, builderArmyId: string
 
     transaction.update(tileRef, {
       ownerId: playerId,
-      base: { ownerId: playerId, barracksLevel: 1, unitQualityLevel: 1, defenseLevel: 1 },
+      base: makeOwnedBase(playerId),
       armyId: null,
     });
     transaction.delete(builderArmyRef);
     transaction.update(playerRef, {
       supplies: player.supplies - BUILD_BASE_COST,
+      stats: mergedPlayerStats(player, { basesBuilt: 1 }),
       ...applyXp(player, XP_BUILD_BASE),
     });
 
     return `Built a new base for ${BUILD_BASE_COST} supplies. +${XP_BUILD_BASE} XP.`;
+  });
+}
+
+export async function reclaimBaseWithBuilder(gameId: string, builderArmyId: string, playerId: string) {
+  return runTransaction(db, async (transaction) => {
+    const gameRef = doc(db, 'games', gameId);
+    const builderArmyRef = doc(db, 'games', gameId, 'armies', builderArmyId);
+    const playerRef = doc(db, 'games', gameId, 'players', playerId);
+
+    const [gameSnap, builderArmySnap, playerSnap] = await Promise.all([
+      transaction.get(gameRef),
+      transaction.get(builderArmyRef),
+      transaction.get(playerRef),
+    ]);
+    if (!gameSnap.exists() || !builderArmySnap.exists() || !playerSnap.exists()) {
+      throw new Error('Game state changed. Try again.');
+    }
+
+    const game = { id: gameSnap.id, ...gameSnap.data() } as GameDoc;
+    const builderArmy = { id: builderArmySnap.id, ...builderArmySnap.data() } as ArmyDoc;
+    const player = { id: playerSnap.id, ...playerSnap.data() } as PlayerDoc;
+    const tileRef = doc(db, 'games', gameId, 'tiles', builderArmy.tileId);
+    const tileSnap = await transaction.get(tileRef);
+    if (!tileSnap.exists()) throw new Error('Logistics tile is missing.');
+    const tile = { id: tileSnap.id, ...tileSnap.data() } as TileDoc;
+
+    if (!canPlayerActInGame(game, playerId)) throw new Error(actionUnavailableMessage(game, 'You can only reclaim during your turn.'));
+    if (builderArmy.ownerId !== playerId) throw new Error('You do not control that logistics squad.');
+    if (builderArmy.hasActedThisTurn) throw new Error('That logistics squad has already acted this turn.');
+    if (builderArmy.units.length !== 1 || builderArmy.units[0].typeId !== 'builder') {
+      throw new Error('Only a solo Logistics squad can reclaim a ruined base.');
+    }
+    if (!canLogisticsBuildBase(builderArmy)) throw new Error('This Logistics squad cannot reclaim bases yet.');
+    if (!tile.base?.ruined) throw new Error('There is no ruined base on this tile.');
+
+    const cost = reclaimBaseCost(tile.base);
+    if (player.supplies < cost) throw new Error(`You need ${cost} supplies to reclaim this base.`);
+
+    transaction.update(tileRef, {
+      ownerId: playerId,
+      base: {
+        ...tile.base,
+        ownerId: playerId,
+        ruined: false,
+        previousOwnerId: tile.base.previousOwnerId ?? tile.base.ownerId ?? null,
+      },
+    });
+    transaction.update(builderArmyRef, { hasActedThisTurn: true });
+    transaction.update(playerRef, {
+      supplies: player.supplies - cost,
+      stats: mergedPlayerStats(player, { basesCaptured: 1 }),
+      ...applyXp(player, XP_BUILD_BASE),
+    });
+
+    return `Reclaimed the ruined base for ${cost} supplies. Previous upgrades restored. +${XP_BUILD_BASE} XP.`;
   });
 }
 
@@ -1396,7 +1630,7 @@ export async function buildTrenchWithBuilder(gameId: string, builderArmyId: stri
     if (!tileSnap.exists()) throw new Error('Logistics tile is missing.');
     const tile = { id: tileSnap.id, ...tileSnap.data() } as TileDoc;
 
-    if (game.currentTurnPlayerId !== playerId) throw new Error('You can only build during your turn.');
+    if (!canPlayerActInGame(game, playerId)) throw new Error(actionUnavailableMessage(game, 'You can only build during your turn.'));
     if (builderArmy.ownerId !== playerId) throw new Error('You do not control that logistics squad.');
     if (builderArmy.hasActedThisTurn) throw new Error('That logistics squad has already acted this turn.');
     if (builderArmy.units.length !== 1 || builderArmy.units[0].typeId !== 'builder') {
@@ -1433,7 +1667,7 @@ export async function scavengeSuppliesWithBuilder(gameId: string, builderArmyId:
     const builderArmy = { id: builderArmySnap.id, ...builderArmySnap.data() } as ArmyDoc;
     const player = { id: playerSnap.id, ...playerSnap.data() } as PlayerDoc;
 
-    if (game.currentTurnPlayerId !== playerId) throw new Error('You can only scavenge during your turn.');
+    if (!canPlayerActInGame(game, playerId)) throw new Error(actionUnavailableMessage(game, 'You can only scavenge during your turn.'));
     if (builderArmy.ownerId !== playerId) throw new Error('You do not control that logistics squad.');
     if (builderArmy.hasActedThisTurn) throw new Error('That logistics squad has already acted this turn.');
     if (builderArmy.units.length !== 1 || builderArmy.units[0].typeId !== 'builder') {
@@ -1457,7 +1691,7 @@ export async function healArmyWithMedic(gameId: string, armyId: string, playerId
 
     const game = { id: gameSnap.id, ...gameSnap.data() } as GameDoc;
     const army = { id: armySnap.id, ...armySnap.data() } as ArmyDoc;
-    if (game.currentTurnPlayerId !== playerId) throw new Error('You can only heal during your turn.');
+    if (!canPlayerActInGame(game, playerId)) throw new Error(actionUnavailableMessage(game, 'You can only heal during your turn.'));
     if (army.ownerId !== playerId) throw new Error('You do not control that unit.');
     if (!armyHasMedic(army.units)) throw new Error('This unit needs a Medic to heal.');
     if (army.hasMovedThisTurn || army.hasActedThisTurn) {
@@ -1470,6 +1704,8 @@ export async function healArmyWithMedic(gameId: string, armyId: string, playerId
       hasMovedThisTurn: true,
       hasActedThisTurn: true,
       passiveHealSkippedRound: game.roundNumber,
+      queuedMoveTileId: null,
+      queuedMoveMode: null,
     });
 
     return `Medic healed this unit for up to ${MEDIC_ACTIVE_HEAL} HP. Passive healing will skip this round.`;
@@ -1490,7 +1726,7 @@ export async function placeMineWithAntiVehicle(gameId: string, armyId: string, p
     if (!tileSnap.exists()) throw new Error('Unit tile is missing.');
     const tile = { id: tileSnap.id, ...tileSnap.data() } as TileDoc;
 
-    if (game.currentTurnPlayerId !== playerId) throw new Error('You can only place mines during your turn.');
+    if (!canPlayerActInGame(game, playerId)) throw new Error(actionUnavailableMessage(game, 'You can only place mines during your turn.'));
     if (army.ownerId !== playerId) throw new Error('You do not control that unit.');
     if (army.hasActedThisTurn) throw new Error('That unit has already acted this turn.');
     if (!army.units.some((unit) => unit.typeId === 'antiVehicle')) {
@@ -1516,7 +1752,7 @@ export async function fortifyArmy(gameId: string, armyId: string, playerId: stri
 
     const game = { id: gameSnap.id, ...gameSnap.data() } as GameDoc;
     const army = { id: armySnap.id, ...armySnap.data() } as ArmyDoc;
-    if (game.currentTurnPlayerId !== playerId) throw new Error('You can only fortify during your turn.');
+    if (!canPlayerActInGame(game, playerId)) throw new Error(actionUnavailableMessage(game, 'You can only fortify during your turn.'));
     if (army.ownerId !== playerId) throw new Error('You do not control that unit.');
     if (army.hasActedThisTurn) throw new Error('That unit has already acted this turn.');
 
@@ -1525,9 +1761,107 @@ export async function fortifyArmy(gameId: string, armyId: string, playerId: stri
       hasActedThisTurn: true,
       movementUsedThisTurn: 999,
       fortifyTurnsRemaining: FORTIFY_TURNS,
+      queuedMoveTileId: null,
+      queuedMoveMode: null,
     });
 
     return `Unit fortified. Defense increased, attack reduced, and movement locked for ${FORTIFY_TURNS} turns.`;
+  });
+}
+
+export async function queueArmyMove(
+  gameId: string,
+  armyId: string,
+  targetTileId: string,
+  playerId: string,
+  mode: MoveOrderMode = 'aggressive',
+) {
+  return runTransaction(db, async (transaction) => {
+    const gameRef = doc(db, 'games', gameId);
+    const armyRef = doc(db, 'games', gameId, 'armies', armyId);
+    const targetTileRef = doc(db, 'games', gameId, 'tiles', targetTileId);
+    const playerRef = doc(db, 'games', gameId, 'players', playerId);
+
+    const [gameSnap, armySnap, targetTileSnap, playerSnap] = await Promise.all([
+      transaction.get(gameRef),
+      transaction.get(armyRef),
+      transaction.get(targetTileRef),
+      transaction.get(playerRef),
+    ]);
+    if (!gameSnap.exists() || !armySnap.exists() || !targetTileSnap.exists() || !playerSnap.exists()) {
+      throw new Error('Game state changed. Try again.');
+    }
+
+    const game = { id: gameSnap.id, ...gameSnap.data() } as GameDoc;
+    const army = { id: armySnap.id, ...armySnap.data() } as ArmyDoc;
+    const targetTile = { id: targetTileSnap.id, ...targetTileSnap.data() } as TileDoc;
+    const player = { id: playerSnap.id, ...playerSnap.data() } as PlayerDoc;
+    const fromTileRef = doc(db, 'games', gameId, 'tiles', army.tileId);
+    const fromTileSnap = await transaction.get(fromTileRef);
+    if (!fromTileSnap.exists()) throw new Error('Unit tile is missing.');
+    const fromTile = { id: fromTileSnap.id, ...fromTileSnap.data() } as TileDoc;
+    const tilesSnapshot = await getDocs(collection(db, 'games', gameId, 'tiles'));
+    const tiles = tilesSnapshot.docs.map((tileDoc) => ({ id: tileDoc.id, ...tileDoc.data() }) as TileDoc);
+    const armiesSnapshot = await getDocs(collection(db, 'games', gameId, 'armies'));
+    const armies = armiesSnapshot.docs.map((armyDoc) => ({ id: armyDoc.id, ...armyDoc.data() }) as ArmyDoc);
+
+    if (!isSimultaneousGame(game)) throw new Error('Queued movement is only available in timed simultaneous games.');
+    if (!canPlayerActInGame(game, playerId)) throw new Error(actionUnavailableMessage(game, 'It is not your turn.'));
+    if (army.ownerId !== playerId) throw new Error('You do not control that unit.');
+    if (army.hasMovedThisTurn) throw new Error('This unit already used its movement this round.');
+    if ((army.fortifyTurnsRemaining ?? 0) > 0) throw new Error('This unit is fortified and cannot move.');
+    if (targetTile.id === fromTile.id) throw new Error('This unit is already on that tile.');
+    if (targetTile.armyId) throw new Error('Choose an empty destination tile.');
+    if (isImpassableTerrain(targetTile)) throw new Error('Choose a passable destination tile.');
+
+    const path = movementPath(fromTile, targetTile, tiles, { armies, passThroughOwnerId: army.ownerId });
+    if (!path || path.length === 0) throw new Error('No path to that destination.');
+
+    const remainingMovement = movementAllowance(player, army) - (army.movementUsedThisTurn ?? 0);
+    const turnsRemaining = estimateQueuedMoveTurns(path.length, remainingMovement, movementAllowance(player, army));
+    transaction.update(armyRef, {
+      queuedMoveTileId: targetTileId,
+      queuedMoveMode: mode,
+    });
+
+    return `Move order queued to ${targetTile.x}, ${targetTile.y}. ETA ${turnsRemaining} round${turnsRemaining === 1 ? '' : 's'} (${mode}).`;
+  });
+}
+
+export async function setArmyMoveOrderMode(gameId: string, armyId: string, playerId: string, mode: MoveOrderMode) {
+  return runTransaction(db, async (transaction) => {
+    const gameRef = doc(db, 'games', gameId);
+    const armyRef = doc(db, 'games', gameId, 'armies', armyId);
+    const [gameSnap, armySnap] = await Promise.all([transaction.get(gameRef), transaction.get(armyRef)]);
+    if (!gameSnap.exists() || !armySnap.exists()) throw new Error('Game state changed. Try again.');
+
+    const game = { id: gameSnap.id, ...gameSnap.data() } as GameDoc;
+    const army = { id: armySnap.id, ...armySnap.data() } as ArmyDoc;
+    if (!isSimultaneousGame(game)) throw new Error('Queued movement is only available in timed simultaneous games.');
+    if (!canPlayerActInGame(game, playerId)) throw new Error(actionUnavailableMessage(game, 'It is not your turn.'));
+    if (army.ownerId !== playerId) throw new Error('You do not control that unit.');
+    if (!army.queuedMoveTileId) throw new Error('This unit does not have a queued move order.');
+
+    transaction.update(armyRef, { queuedMoveMode: mode });
+    return `Move order changed to ${mode}.`;
+  });
+}
+
+export async function clearArmyMoveOrder(gameId: string, armyId: string, playerId: string) {
+  return runTransaction(db, async (transaction) => {
+    const gameRef = doc(db, 'games', gameId);
+    const armyRef = doc(db, 'games', gameId, 'armies', armyId);
+    const [gameSnap, armySnap] = await Promise.all([transaction.get(gameRef), transaction.get(armyRef)]);
+    if (!gameSnap.exists() || !armySnap.exists()) throw new Error('Game state changed. Try again.');
+
+    const game = { id: gameSnap.id, ...gameSnap.data() } as GameDoc;
+    const army = { id: armySnap.id, ...armySnap.data() } as ArmyDoc;
+    if (!isSimultaneousGame(game)) throw new Error('Queued movement is only available in timed simultaneous games.');
+    if (!canPlayerActInGame(game, playerId)) throw new Error(actionUnavailableMessage(game, 'It is not your turn.'));
+    if (army.ownerId !== playerId) throw new Error('You do not control that unit.');
+
+    transaction.update(armyRef, { queuedMoveTileId: null, queuedMoveMode: null });
+    return 'Move order cleared.';
   });
 }
 
@@ -1586,6 +1920,7 @@ export async function endTurn(gameId: string, playerId: string) {
     const gameSnap = await transaction.get(gameRef);
     if (!gameSnap.exists()) throw new Error('Game not found.');
     const game = { id: gameSnap.id, ...gameSnap.data() } as GameDoc;
+    if (isSimultaneousGame(game)) throw new Error('Timed simultaneous games advance automatically each round.');
     if (game.currentTurnPlayerId !== playerId) throw new Error('It is not your turn.');
 
     const playersSnapshot = await getDocs(query(collection(db, 'games', gameId, 'players'), orderBy('joinedAt')));
@@ -1603,6 +1938,9 @@ export async function endTurn(gameId: string, playerId: string) {
     const nextRound = currentIndex === activePlayers.length - 1 ? game.roundNumber + 1 : game.roundNumber;
     const nextTurn = game.turnNumber + 1;
     const isRoundEnding = nextRound > game.roundNumber;
+    const hasReachedTurnLimit = isRoundEnding && game.turnLimitRounds !== null && game.turnLimitRounds !== undefined
+      ? game.roundNumber >= game.turnLimitRounds
+      : false;
 
     const armies = armiesSnapshot.docs.map((armyDoc) => ({ id: armyDoc.id, ...armyDoc.data() }) as ArmyDoc);
     const nextIncome = suppliesFromBases(nextPlayer, tiles, armies);
@@ -1615,6 +1953,11 @@ export async function endTurn(gameId: string, playerId: string) {
       const endTurnXp = XP_END_TURN + ownedBaseCount * XP_PER_BASE_AT_TURN_END;
       transaction.update(doc(db, 'games', gameId, 'players', playerId), applyXp(currentPlayer, endTurnXp));
     }
+    const projectedPlayers = players.map((player) =>
+      player.id === playerId
+        ? { ...player, ...applyXp(player, XP_END_TURN + tiles.filter((tile) => tile.base?.ownerId === playerId).length * XP_PER_BASE_AT_TURN_END) }
+        : player,
+    );
     armiesSnapshot.docs.forEach((armyDoc) => {
       const army = armyDoc.data() as ArmyDoc;
       const armyUpdates: Partial<ArmyDoc> = {};
@@ -1642,12 +1985,563 @@ export async function endTurn(gameId: string, playerId: string) {
       }
       if (Object.keys(armyUpdates).length > 0) transaction.update(armyDoc.ref, armyUpdates);
     });
+    if (hasReachedTurnLimit) {
+      const winner = determineWinnerByXp(projectedPlayers);
+      transaction.update(gameRef, {
+        ...finishGameUpdates(game, winner?.id ?? null, 'turn-limit'),
+        currentTurnPlayerId: null,
+      });
+      return;
+    }
     transaction.update(gameRef, {
       currentTurnPlayerId: nextPlayer.id,
       turnNumber: nextTurn,
       roundNumber: nextRound,
     });
   });
+}
+
+export async function advanceSimultaneousRound(gameId: string) {
+  await runTransaction(db, async (transaction) => {
+    const gameRef = doc(db, 'games', gameId);
+    const gameSnap = await transaction.get(gameRef);
+    if (!gameSnap.exists()) throw new Error('Game not found.');
+    const game = { id: gameSnap.id, ...gameSnap.data() } as GameDoc;
+    if (!isSimultaneousGame(game)) throw new Error('This game is not using timed simultaneous rounds.');
+    if (game.status !== 'active') throw new Error('This game is not active.');
+    if ((game.roundEndsAtMs ?? 0) > Date.now()) throw new Error('The current round is still in progress.');
+
+    const playersSnapshot = await getDocs(query(collection(db, 'games', gameId, 'players'), orderBy('joinedAt')));
+    const tilesSnapshot = await getDocs(collection(db, 'games', gameId, 'tiles'));
+    const armiesSnapshot = await getDocs(collection(db, 'games', gameId, 'armies'));
+    const players = playersSnapshot.docs.map((player) => ({ id: player.id, ...player.data() }) as PlayerDoc);
+    const tiles = tilesSnapshot.docs.map((tile) => ({ id: tile.id, ...tile.data() }) as TileDoc);
+    const armies = armiesSnapshot.docs.map((armyDoc) => ({ id: armyDoc.id, ...armyDoc.data() }) as ArmyDoc);
+    const autoResolution = processQueuedMoveOrders(game, players, tiles, armies);
+    const activePlayers = players.filter(
+      (player) => !player.isEliminated && !autoResolution.eliminatedPlayerIds.includes(player.id),
+    );
+
+    autoResolution.eliminatedPlayerIds.forEach((playerId) => {
+      transaction.update(doc(db, 'games', gameId, 'players', playerId), { isEliminated: true });
+    });
+
+    if (activePlayers.length <= 1) {
+      const winner = activePlayers[0] ?? determineWinnerByXp(players);
+      transaction.update(gameRef, {
+        ...finishGameUpdates(game, winner?.id ?? null, 'elimination'),
+      });
+      return;
+    }
+
+    const projectedPlayers = players.map((player) => {
+      if (!activePlayers.some((activePlayer) => activePlayer.id === player.id)) return player;
+      const reward = autoResolution.playerRewards.get(player.id) ?? { supplies: 0, xp: 0 };
+      const statDelta = autoResolution.playerStatDeltas.get(player.id) ?? {};
+      const ownedBaseCount = autoResolution.tiles.filter((tile) => tile.base?.ownerId === player.id).length;
+      const roundXp = XP_END_TURN + ownedBaseCount * XP_PER_BASE_AT_TURN_END;
+      return {
+        ...player,
+        supplies: player.supplies + suppliesFromBases(player, autoResolution.tiles, autoResolution.armies) + reward.supplies,
+        stats: mergedPlayerStats(player, statDelta),
+        ...applyXp(player, roundXp + reward.xp),
+      };
+    });
+
+    const hasReachedTurnLimit =
+      game.turnLimitRounds !== null && game.turnLimitRounds !== undefined ? game.roundNumber >= game.turnLimitRounds : false;
+
+    activePlayers.forEach((player) => {
+      const reward = autoResolution.playerRewards.get(player.id) ?? { supplies: 0, xp: 0 };
+      const statDelta = autoResolution.playerStatDeltas.get(player.id) ?? {};
+      const nextIncome = suppliesFromBases(player, autoResolution.tiles, autoResolution.armies);
+      const ownedBaseCount = autoResolution.tiles.filter((tile) => tile.base?.ownerId === player.id).length;
+      const roundXp = XP_END_TURN + ownedBaseCount * XP_PER_BASE_AT_TURN_END;
+      transaction.update(doc(db, 'games', gameId, 'players', player.id), {
+        supplies: player.supplies + nextIncome + reward.supplies,
+        exploredTileIds: exploredTileIdsFor(player, autoResolution.tiles, autoResolution.armies),
+        stats: mergedPlayerStats(player, statDelta),
+        ...applyXp(player, roundXp + reward.xp),
+      });
+    });
+
+    players
+      .filter((player) => !activePlayers.some((activePlayer) => activePlayer.id === player.id))
+      .forEach((player) => {
+        const statDelta = autoResolution.playerStatDeltas.get(player.id);
+        if (!statDelta) return;
+        transaction.update(doc(db, 'games', gameId, 'players', player.id), {
+          stats: mergedPlayerStats(player, statDelta),
+        });
+      });
+
+    const originalArmiesById = new Map(armiesSnapshot.docs.map((armyDoc) => [armyDoc.id, armyDoc.ref]));
+    const originalTilesById = new Map(tilesSnapshot.docs.map((tileDoc) => [tileDoc.id, tileDoc.ref]));
+    const nextArmiesById = new Map(autoResolution.armies.map((army) => [army.id, army]));
+    const nextTilesById = new Map(autoResolution.tiles.map((tile) => [tile.id, tile]));
+
+    armiesSnapshot.docs.forEach((armyDoc) => {
+      const army = nextArmiesById.get(armyDoc.id);
+      if (!army) {
+        transaction.delete(armyDoc.ref);
+        return;
+      }
+      const fortifyTurnsRemaining = army.fortifyTurnsRemaining ?? 0;
+      const isMovementLocked = fortifyTurnsRemaining > 0;
+      const passivelyHealedUnits =
+        army.units.length > 0 && armyHasMedic(army.units) && army.passiveHealSkippedRound !== game.roundNumber
+          ? healUnits(
+              army.units,
+              MEDIC_PASSIVE_HEAL + (hasFieldHospital(army.units) ? FIELD_HOSPITAL_PASSIVE_HEAL_BONUS : 0),
+            )
+          : army.units;
+      const fullHealthXp =
+        army.units.length > 0 && armyCurrentHealth(passivelyHealedUnits) >= armyMaxHealth(passivelyHealedUnits)
+          ? army.units.length * UNIT_XP_FULL_HEALTH_END_ROUND
+          : 0;
+      transaction.update(armyDoc.ref, {
+        units: applyUnitXp(passivelyHealedUnits, fullHealthXp),
+        hasMovedThisTurn: isMovementLocked,
+        hasActedThisTurn: false,
+        movementUsedThisTurn: isMovementLocked ? 999 : 0,
+        fortifyTurnsRemaining: Math.max(0, fortifyTurnsRemaining - 1),
+        tileId: army.tileId,
+        lastMoveDirection: army.lastMoveDirection ?? null,
+        queuedMoveTileId: army.queuedMoveTileId ?? null,
+        queuedMoveMode: army.queuedMoveMode ?? null,
+        passiveHealSkippedRound: army.passiveHealSkippedRound ?? null,
+      });
+    });
+
+    autoResolution.armies
+      .filter((army) => !originalArmiesById.has(army.id))
+      .forEach((army) => {
+        transaction.set(doc(db, 'games', gameId, 'armies', army.id), {
+          ownerId: army.ownerId,
+          tileId: army.tileId,
+          units: army.units,
+          hasMovedThisTurn: false,
+          hasActedThisTurn: false,
+          movementUsedThisTurn: 0,
+          lastMoveDirection: army.lastMoveDirection ?? null,
+          fortifyTurnsRemaining: army.fortifyTurnsRemaining ?? null,
+          passiveHealSkippedRound: army.passiveHealSkippedRound ?? null,
+          queuedMoveTileId: army.queuedMoveTileId ?? null,
+          queuedMoveMode: army.queuedMoveMode ?? null,
+        });
+      });
+
+    tilesSnapshot.docs.forEach((tileDoc) => {
+      const nextTile = nextTilesById.get(tileDoc.id);
+      if (!nextTile) return;
+      const currentTile = { id: tileDoc.id, ...tileDoc.data() } as TileDoc;
+      if (JSON.stringify(currentTile) === JSON.stringify(nextTile)) return;
+      transaction.update(tileDoc.ref, {
+        ownerId: nextTile.ownerId,
+        armyId: nextTile.armyId,
+        base: nextTile.base,
+        mine: nextTile.mine ?? null,
+        trench: nextTile.trench ?? null,
+      });
+    });
+
+    if (hasReachedTurnLimit) {
+      const winner = determineWinnerByXp(projectedPlayers);
+      transaction.update(gameRef, {
+        ...finishGameUpdates(game, winner?.id ?? null, 'turn-limit'),
+        currentTurnPlayerId: null,
+      });
+      return;
+    }
+
+    transaction.update(gameRef, {
+      currentTurnPlayerId: null,
+      turnNumber: game.turnNumber + 1,
+      roundNumber: game.roundNumber + 1,
+      roundEndsAtMs: nextRoundEndsAtMs(game.roundDurationSeconds),
+    });
+  });
+}
+
+function processQueuedMoveOrders(game: GameDoc, players: PlayerDoc[], tiles: TileDoc[], armies: ArmyDoc[]) {
+  const nextTiles = tiles.map((tile) => ({
+    ...tile,
+    base: tile.base ? { ...tile.base, unitQualityByType: { ...(tile.base.unitQualityByType ?? {}) } } : null,
+    mine: tile.mine ? { ...tile.mine } : null,
+    trench: tile.trench ? { ...tile.trench } : null,
+  }));
+  const nextArmies = armies.map((army) => ({
+    ...army,
+    units: army.units.map((unit) => ({ ...unit })),
+  }));
+  const playerRewards = new Map<string, { supplies: number; xp: number }>();
+  const playerStatDeltas = new Map<string, Partial<PlayerStats>>();
+  const orderedArmies = nextArmies.filter(
+    (army) => army.queuedMoveTileId && !army.hasMovedThisTurn && army.units.length > 0,
+  );
+
+  orderedArmies.forEach((army) => {
+    const player = players.find((candidate) => candidate.id === army.ownerId);
+    if (!player) return;
+
+    const startTile = nextTiles.find((tile) => tile.id === army.tileId);
+    if (!startTile) return;
+
+    if (army.queuedMoveMode !== 'passive') {
+      const attackedBeforeMove = tryResolveQueuedAttack(
+        game,
+        players,
+        player,
+        army,
+        startTile,
+        nextTiles,
+        nextArmies,
+        playerRewards,
+        playerStatDeltas,
+      );
+      if (attackedBeforeMove) return;
+    }
+
+    const destinationTile = nextTiles.find((tile) => tile.id === army.queuedMoveTileId);
+    if (!destinationTile || destinationTile.id === startTile.id) {
+      army.queuedMoveTileId = null;
+      army.queuedMoveMode = null;
+      return;
+    }
+
+    const path = movementPath(startTile, destinationTile, nextTiles, {
+      armies: nextArmies,
+      passThroughOwnerId: army.ownerId,
+    });
+    if (!path || path.length === 0) {
+      army.queuedMoveTileId = null;
+      army.queuedMoveMode = null;
+      return;
+    }
+
+    const finalTile = resolveQueuedMoveDestination(path, player, army);
+    if (finalTile) {
+      applyQueuedMove(army, startTile, finalTile, nextTiles, nextArmies, playerStatDeltas);
+    }
+
+    const currentTile = nextTiles.find((tile) => tile.id === army.tileId);
+    if (army.queuedMoveTileId && army.queuedMoveMode !== 'passive' && currentTile) {
+      tryResolveQueuedAttack(
+        game,
+        players,
+        player,
+        army,
+        currentTile,
+        nextTiles,
+        nextArmies,
+        playerRewards,
+        playerStatDeltas,
+      );
+    }
+
+    if (army.queuedMoveTileId === army.tileId) {
+      army.queuedMoveTileId = null;
+      army.queuedMoveMode = null;
+    }
+  });
+
+  const eliminatedPlayerIds = players
+    .filter((player) => !player.isEliminated)
+    .filter((player) => shouldEliminatePlayer(player.id, nextTiles, nextArmies))
+    .map((player) => player.id);
+
+  return { tiles: nextTiles, armies: nextArmies, playerRewards, playerStatDeltas, eliminatedPlayerIds };
+}
+
+function tryResolveQueuedAttack(
+  game: GameDoc,
+  players: PlayerDoc[],
+  player: PlayerDoc,
+  army: ArmyDoc,
+  fromTile: TileDoc,
+  tiles: TileDoc[],
+  armies: ArmyDoc[],
+  playerRewards: Map<string, { supplies: number; xp: number }>,
+  playerStatDeltas: Map<string, Partial<PlayerStats>>,
+) {
+  if (army.hasActedThisTurn || army.units.length === 0) return false;
+
+  const targetTile = chooseQueuedAttackTarget(army, fromTile, player.id, tiles, armies);
+  if (!targetTile) return false;
+
+  applyQueuedAttack(game, players, player, army, fromTile, targetTile, tiles, armies, playerRewards, playerStatDeltas);
+  return true;
+}
+
+function chooseQueuedAttackTarget(
+  army: ArmyDoc,
+  fromTile: TileDoc,
+  playerId: string,
+  tiles: TileDoc[],
+  armies: ArmyDoc[],
+) {
+  const armiesById = new Map(armies.map((candidate) => [candidate.id, candidate]));
+  return tiles
+    .filter((tile) => canAttackTile(army, fromTile, tile, playerId, tiles))
+    .sort((a, b) => {
+      const aArmy = a.armyId ? armiesById.get(a.armyId) : null;
+      const bArmy = b.armyId ? armiesById.get(b.armyId) : null;
+      const aScore = (a.base && !a.base.ruined ? 0 : 10) + (aArmy ? 0 : 4) + chebyshevDistance(fromTile, a);
+      const bScore = (b.base && !b.base.ruined ? 0 : 10) + (bArmy ? 0 : 4) + chebyshevDistance(fromTile, b);
+      return aScore - bScore;
+    })[0] ?? null;
+}
+
+function resolveQueuedMoveDestination(path: TileDoc[], player: PlayerDoc, army: ArmyDoc) {
+  const moveBudget = Math.max(0, movementAllowance(player, army) - (army.movementUsedThisTurn ?? 0));
+  if (moveBudget <= 0) return null;
+  const moveSlice = path.slice(0, moveBudget);
+  const movementWaypoints = moveSlice.filter((tile) => !tile.armyId);
+  return movementWaypoints[movementWaypoints.length - 1] ?? null;
+}
+
+function applyQueuedMove(
+  army: ArmyDoc,
+  fromTile: TileDoc,
+  targetTile: TileDoc,
+  tiles: TileDoc[],
+  armies: ArmyDoc[],
+  playerStatDeltas: Map<string, Partial<PlayerStats>>,
+) {
+  const moveCost = movementCost(fromTile, targetTile, tiles, { armies, passThroughOwnerId: army.ownerId }) ?? 0;
+  const mineDamage = targetTile.mine?.damage ?? ANTI_VEHICLE_MINE_DAMAGE;
+  const mineTriggers =
+    Boolean(targetTile.mine && targetTile.mine.ownerId !== army.ownerId) && army.units.some((unit) => unit.typeId === 'tank');
+  const movedUnits = mineTriggers ? damageTankUnits(army.units, mineDamage) : army.units;
+  const sentryAttacks =
+    movedUnits.length > 0
+      ? tiles
+          .filter((tile) => tile.base && !tile.base.ruined && tile.base.ownerId !== army.ownerId)
+          .map((tile) => {
+            const offenseConfig = UPGRADE_CONFIG.baseOffense.find((level) => level.level === (tile.base!.offenseLevel ?? 1));
+            return { tile, offenseConfig };
+          })
+          .filter(
+            (entry): entry is { tile: TileDoc; offenseConfig: (typeof UPGRADE_CONFIG.baseOffense)[number] } =>
+              Boolean(
+                entry.offenseConfig &&
+                  entry.offenseConfig.damage > 0 &&
+                  chebyshevDistance(entry.tile, targetTile) <= entry.offenseConfig.range &&
+                  hasLineOfSight(entry.tile, targetTile, tiles),
+              ),
+          )
+      : [];
+  const sentryLosses = sentryAttacks.reduce((total, entry) => total + entry.offenseConfig.damage, 0);
+  const finalUnits = sentryLosses > 0 ? removeUnitLosses(movedUnits, sentryLosses, 'defender') : movedUnits;
+  const unitsLost = Math.max(0, army.units.length - finalUnits.length);
+  if (unitsLost > 0) addPlayerStatDelta(playerStatDeltas, army.ownerId, { unitsLost });
+
+  fromTile.armyId = null;
+  if (mineTriggers) targetTile.mine = null;
+
+  if (finalUnits.length === 0) {
+    targetTile.armyId = null;
+    const armyIndex = armies.findIndex((candidate) => candidate.id === army.id);
+    if (armyIndex >= 0) armies.splice(armyIndex, 1);
+    return;
+  }
+
+  army.tileId = targetTile.id;
+  army.units = finalUnits;
+  army.hasMovedThisTurn = true;
+  army.movementUsedThisTurn = (army.movementUsedThisTurn ?? 0) + moveCost;
+  army.lastMoveDirection = directionFromTiles(fromTile, targetTile);
+  targetTile.armyId = army.id;
+}
+
+function applyQueuedAttack(
+  game: GameDoc,
+  players: PlayerDoc[],
+  player: PlayerDoc,
+  attacker: ArmyDoc,
+  fromTile: TileDoc,
+  targetTile: TileDoc,
+  tiles: TileDoc[],
+  armies: ArmyDoc[],
+  playerRewards: Map<string, { supplies: number; xp: number }>,
+  playerStatDeltas: Map<string, Partial<PlayerStats>>,
+) {
+  const defender = targetTile.armyId ? armies.find((army) => army.id === targetTile.armyId) ?? null : null;
+  const defendingOwnerId =
+    defender?.ownerId ??
+    (targetTile.base && !targetTile.base.ruined && targetTile.base.ownerId !== player.id ? targetTile.base.ownerId : null);
+  const defendingPlayer = defendingOwnerId ? players.find((candidate) => candidate.id === defendingOwnerId) ?? null : null;
+  if (!defendingOwnerId) return;
+
+  const isRangedArtilleryAttack = isSoloArtilleryArmy(attacker) && chebyshevDistance(fromTile, targetTile) > 1;
+  const supportedByAdjacentArmy = armies.some((supportArmy) => {
+    if (supportArmy.id === attacker.id || supportArmy.ownerId !== player.id) return false;
+    const supportTile = tiles.find((tile) => tile.id === supportArmy.tileId);
+    return Boolean(supportTile && manhattanDistance(fromTile, supportTile) === 1);
+  });
+  const defendingBase = targetTile.base && !targetTile.base.ruined && targetTile.base.ownerId !== player.id ? targetTile.base : null;
+  const attackTalentBonus = (player.talents.attackTraining ?? 0) * 0.05;
+  const supportTalentBonus = supportedByAdjacentArmy ? 0.1 + (player.talents.coordinatedAssault ?? 0) * 0.02 : 0;
+  const defenseTalentBonus = (defendingPlayer?.talents.defensiveDrills ?? 0) * 0.05;
+  const baseTalentDefenseBonus = defendingBase ? defendingPlayer?.talents.baseFortification ?? 0 : 0;
+  const baseAuraDefenseBonus =
+    defendingOwnerId && isInFriendlyBaseAura(targetTile, defendingOwnerId, tiles) ? BASE_AURA_DEFENSE_BONUS : 0;
+  const trenchAttackBonus = fromTile.trench ? TRENCH_ATTACK_BONUS : 0;
+  const trenchDefenseBonus = targetTile.trench ? TRENCH_DEFENSE_BONUS : 0;
+  const attackerCombinedArmsBonus = hasCombinedArms(attacker.units) ? 0.1 : 0;
+  const defenderCombinedArmsBonus = defender && hasCombinedArms(defender.units) ? 0.1 : 0;
+  const tankHunterBonus = defender?.units.some((unit) => unit.typeId === 'tank') && hasTankHunters(attacker.units) ? 0.25 : 0;
+  const entrenchedInfantryBonus =
+    defender && hasEntrenchedInfantry(defender.units) && (Boolean(targetTile.trench) || baseAuraDefenseBonus > 0) ? 0.15 : 0;
+  const siegeColumnBonus = defendingBase && hasSiegeColumn(attacker.units) ? 0.2 : 0;
+  const fortifyAttackPenalty = (attacker.fortifyTurnsRemaining ?? 0) > 0 ? FORTIFY_ATTACK_MULTIPLIER : 1;
+  const fortifyDefenseBonus = defender && (defender.fortifyTurnsRemaining ?? 0) > 0 ? FORTIFY_DEFENSE_MULTIPLIER : 1;
+  const resolvedCombat = resolveCombat(
+    attacker.units,
+    defender?.units ?? [],
+    targetTile.terrainType,
+    defendingBase,
+    (1 + attackTalentBonus + supportTalentBonus + attackerCombinedArmsBonus + tankHunterBonus + siegeColumnBonus) *
+      fortifyAttackPenalty,
+    (1 + defenseTalentBonus + defenderCombinedArmsBonus + entrenchedInfantryBonus) * fortifyDefenseBonus,
+    baseTalentDefenseBonus + baseAuraDefenseBonus + trenchDefenseBonus,
+    trenchAttackBonus,
+  );
+  const combat = isRangedArtilleryAttack ? { ...resolvedCombat, attackerLosses: 0 } : resolvedCombat;
+  const remainingAttackers = removeUnitLosses(attacker.units, combat.attackerLosses, 'attacker');
+  const remainingDefenders = defender ? removeUnitLosses(defender.units, combat.defenderLosses, 'defender') : [];
+  const xpGained =
+    XP_ATTACK +
+    combat.defenderLosses * XP_DESTROY_UNIT +
+    (defender && remainingDefenders.length === 0 ? XP_DESTROY_ARMY : 0) +
+    (combat.baseDestroyed ? XP_DESTROY_BASE : 0);
+  const suppliesGained =
+    combat.defenderLosses * SUPPLIES_DESTROY_UNIT +
+    (defender && remainingDefenders.length === 0 ? SUPPLIES_DESTROY_ARMY : 0) +
+    (combat.baseDestroyed ? SUPPLIES_DESTROY_BASE : 0);
+  const defenderSuppliesGained =
+    defender && remainingAttackers.length === 0 ? combat.attackerLosses * SUPPLIES_DESTROY_UNIT + SUPPLIES_DESTROY_ARMY : 0;
+  const unitXpGained =
+    combat.defenderLosses * UNIT_XP_DESTROY_UNIT + (defender && remainingDefenders.length === 0 ? UNIT_XP_DESTROY_ARMY : 0);
+
+  addPlayerReward(playerRewards, player.id, suppliesGained, xpGained);
+  addPlayerStatDelta(playerStatDeltas, player.id, {
+    enemiesKilled: combat.defenderLosses,
+    basesDestroyed: combat.baseDestroyed ? 1 : 0,
+    unitsLost: combat.attackerLosses,
+  });
+  if (defender && defenderSuppliesGained > 0) {
+    addPlayerReward(playerRewards, defender.ownerId, defenderSuppliesGained, 0);
+    addPlayerStatDelta(playerStatDeltas, defender.ownerId, {
+      enemiesKilled: combat.attackerLosses,
+      unitsLost: combat.defenderLosses,
+    });
+  } else if (defendingOwnerId && combat.defenderLosses > 0) {
+    addPlayerStatDelta(playerStatDeltas, defendingOwnerId, {
+      unitsLost: combat.defenderLosses,
+    });
+  }
+
+  if (remainingAttackers.length === 0) {
+    fromTile.armyId = null;
+    const attackerIndex = armies.findIndex((candidate) => candidate.id === attacker.id);
+    if (attackerIndex >= 0) armies.splice(attackerIndex, 1);
+  } else {
+    attacker.units = applyUnitXp(remainingAttackers, unitXpGained);
+    attacker.hasActedThisTurn = true;
+  }
+
+  if (defender && remainingDefenders.length === 0) {
+    targetTile.armyId = null;
+    const defenderIndex = armies.findIndex((candidate) => candidate.id === defender.id);
+    if (defenderIndex >= 0) armies.splice(defenderIndex, 1);
+    if (combat.baseDestroyed) {
+      targetTile.base = ruinBase(targetTile.base);
+      targetTile.ownerId = null;
+    }
+  } else if (defender) {
+    defender.units = remainingDefenders;
+  } else if (combat.baseDestroyed) {
+    targetTile.base = ruinBase(targetTile.base);
+    targetTile.ownerId = null;
+  }
+}
+
+function addPlayerReward(rewards: Map<string, { supplies: number; xp: number }>, playerId: string, supplies: number, xp: number) {
+  const current = rewards.get(playerId) ?? { supplies: 0, xp: 0 };
+  rewards.set(playerId, {
+    supplies: current.supplies + supplies,
+    xp: current.xp + xp,
+  });
+}
+
+function addPlayerStatDelta(deltas: Map<string, Partial<PlayerStats>>, playerId: string, delta: Partial<PlayerStats>) {
+  const current = deltas.get(playerId) ?? {};
+  deltas.set(playerId, {
+    enemiesKilled: (current.enemiesKilled ?? 0) + (delta.enemiesKilled ?? 0),
+    basesBuilt: (current.basesBuilt ?? 0) + (delta.basesBuilt ?? 0),
+    basesCaptured: (current.basesCaptured ?? 0) + (delta.basesCaptured ?? 0),
+    basesDestroyed: (current.basesDestroyed ?? 0) + (delta.basesDestroyed ?? 0),
+    unitsLost: (current.unitsLost ?? 0) + (delta.unitsLost ?? 0),
+    unitsCreated: (current.unitsCreated ?? 0) + (delta.unitsCreated ?? 0),
+  });
+}
+
+function makeEmptyPlayerStats(): PlayerStats {
+  return {
+    enemiesKilled: 0,
+    basesBuilt: 0,
+    basesCaptured: 0,
+    basesDestroyed: 0,
+    unitsLost: 0,
+    unitsCreated: 0,
+  };
+}
+
+function mergedPlayerStats(player: PlayerDoc, delta: Partial<PlayerStats>): PlayerStats {
+  const current = player.stats ?? makeEmptyPlayerStats();
+  return {
+    enemiesKilled: current.enemiesKilled + (delta.enemiesKilled ?? 0),
+    basesBuilt: current.basesBuilt + (delta.basesBuilt ?? 0),
+    basesCaptured: current.basesCaptured + (delta.basesCaptured ?? 0),
+    basesDestroyed: current.basesDestroyed + (delta.basesDestroyed ?? 0),
+    unitsLost: current.unitsLost + (delta.unitsLost ?? 0),
+    unitsCreated: current.unitsCreated + (delta.unitsCreated ?? 0),
+  };
+}
+
+function normalizeTurnLimit(turnLimitRounds: number | null | undefined) {
+  const limit = Number(turnLimitRounds ?? 0);
+  if (!Number.isFinite(limit) || limit <= 0) return null;
+  return [5, 10, 15, 20, 25, 30, 40, 50].includes(limit) ? limit : 20;
+}
+
+function determineWinnerByXp(players: PlayerDoc[]) {
+  return [...players]
+    .sort((a, b) => {
+      if (b.xp !== a.xp) return b.xp - a.xp;
+      const aStats = a.stats ?? makeEmptyPlayerStats();
+      const bStats = b.stats ?? makeEmptyPlayerStats();
+      if (bStats.enemiesKilled !== aStats.enemiesKilled) return bStats.enemiesKilled - aStats.enemiesKilled;
+      if (aStats.unitsLost !== bStats.unitsLost) return aStats.unitsLost - bStats.unitsLost;
+      return a.joinedAt && b.joinedAt ? 0 : 0;
+    })[0] ?? null;
+}
+
+function finishGameUpdates(game: GameDoc, winnerPlayerId: string | null, victoryReason: VictoryReason) {
+  return {
+    status: 'finished' as const,
+    winnerPlayerId,
+    victoryReason,
+    roundEndsAtMs: null,
+  };
+}
+
+function estimateQueuedMoveTurns(pathLength: number, initialMovement: number, perRoundMovement: number) {
+  if (pathLength <= 0) return 0;
+  if (initialMovement >= pathLength) return 1;
+  const remainingDistance = Math.max(0, pathLength - Math.max(0, initialMovement));
+  return 1 + Math.ceil(remainingDistance / Math.max(1, perRoundMovement));
 }
 
 async function createPlayer(gameId: string, user: User, playerName: string, colorIndex: number) {
@@ -1660,6 +2554,7 @@ async function createPlayer(gameId: string, user: User, playerName: string, colo
     talentPoints: 0,
     talents: {},
     isEliminated: false,
+    stats: makeEmptyPlayerStats(),
     exploredTileIds: [],
     joinedAt: serverTimestamp(),
   });
@@ -1669,11 +2564,15 @@ function makeGameCode() {
   return Math.random().toString(36).slice(2, 8).toUpperCase();
 }
 
-function makeTerrain(): TileDoc[] {
+function chooseMapTemplateForPlayerCount(playerCount: number) {
+  return playerCount >= 5 ? MAP_TEMPLATES['grand-front'] : MAP_TEMPLATES['classic-front'];
+}
+
+function makeTerrain(mapTemplate: MapTemplate): TileDoc[] {
   const tiles: TileDoc[] = [];
-  for (let y = 0; y < MAP_HEIGHT; y += 1) {
-    for (let x = 0; x < MAP_WIDTH; x += 1) {
-      const terrainType = terrainForCoords(x, y);
+  for (let y = 0; y < mapTemplate.height; y += 1) {
+    for (let x = 0; x < mapTemplate.width; x += 1) {
+      const terrainType = terrainForCoords(mapTemplate, x, y);
       tiles.push({
         id: tileIdFromCoords(x, y),
         x,
@@ -1690,8 +2589,28 @@ function makeTerrain(): TileDoc[] {
   return tiles;
 }
 
-function terrainForCoords(x: number, y: number): TileDoc['terrainType'] {
-  if (isProtectedStartArea(x, y)) return 'plains';
+function terrainForCoords(mapTemplate: MapTemplate, x: number, y: number): TileDoc['terrainType'] {
+  if (isProtectedStartArea(mapTemplate, x, y)) return 'plains';
+
+  if (mapTemplate.id === 'grand-front') {
+    const waterBand =
+      (x >= 11 && x <= 15 && y >= 4 && y <= 21) ||
+      (y >= 14 && y <= 17 && x >= 5 && x <= 12) ||
+      (y >= 8 && y <= 11 && x >= 17 && x <= 23);
+    const waterScatter = (x * 13 + y * 9) % 53 === 0;
+    if (waterBand || waterScatter) return 'water';
+
+    const mountainRidge =
+      (x >= 19 && x <= 22 && y >= 12 && y <= 24) ||
+      (x >= 6 && x <= 9 && y >= 10 && y <= 22) ||
+      (x >= 12 && x <= 16 && y >= 3 && y <= 8);
+    const mountainScatter = (x * 7 + y * 15) % 61 === 0;
+    if (mountainRidge || mountainScatter) return 'mountain';
+
+    if ((x + y) % 8 === 0) return 'forest';
+    if ((x * y + x + y) % 19 === 0) return 'hill';
+    return 'plains';
+  }
 
   const waterBand = (x >= 7 && x <= 10 && y >= 3 && y <= 14) || (y >= 12 && y <= 14 && x >= 3 && x <= 8);
   const waterScatter = (x * 11 + y * 7) % 37 === 0;
@@ -1706,8 +2625,23 @@ function terrainForCoords(x: number, y: number): TileDoc['terrainType'] {
   return 'plains';
 }
 
-function isProtectedStartArea(x: number, y: number) {
-  return STARTING_POSITIONS.some((start) => Math.abs(start.x - x) + Math.abs(start.y - y) <= 2);
+function isProtectedStartArea(mapTemplate: MapTemplate, x: number, y: number) {
+  return mapTemplate.startingPositions.some((start) => Math.abs(start.x - x) + Math.abs(start.y - y) <= 2);
+}
+
+function builderTileIdForStart(start: { x: number; y: number }, mapTemplate: MapTemplate) {
+  const centerX = (mapTemplate.width - 1) / 2;
+  const centerY = (mapTemplate.height - 1) / 2;
+  const deltaX = centerX - start.x;
+  const deltaY = centerY - start.y;
+
+  if (Math.abs(deltaX) >= Math.abs(deltaY)) {
+    const builderX = Math.max(0, Math.min(mapTemplate.width - 1, start.x + (deltaX >= 0 ? 1 : -1)));
+    return tileIdFromCoords(builderX, start.y);
+  }
+
+  const builderY = Math.max(0, Math.min(mapTemplate.height - 1, start.y + (deltaY >= 0 ? 1 : -1)));
+  return tileIdFromCoords(start.x, builderY);
 }
 
 function shouldEliminatePlayer(playerId: string, tiles: TileDoc[], armies: ArmyDoc[]) {
@@ -1778,7 +2712,7 @@ async function upgradeBase(
     const baseTile = { id: baseTileSnap.id, ...baseTileSnap.data() } as TileDoc;
     const player = { id: playerSnap.id, ...playerSnap.data() } as PlayerDoc;
 
-    if (game.currentTurnPlayerId !== playerId) throw new Error('You can only upgrade during your turn.');
+    if (!canPlayerActInGame(game, playerId)) throw new Error(actionUnavailableMessage(game, 'You can only upgrade during your turn.'));
     if (!baseTile.base || baseTile.base.ownerId !== playerId) throw new Error('You do not control that base.');
 
     const currentBase = baseTile.base;
@@ -1842,6 +2776,61 @@ async function upgradeBase(
   });
 }
 
+function makeOwnedBase(ownerId: string) {
+  return {
+    ownerId,
+    barracksLevel: 1,
+    unitQualityLevel: 1,
+    defenseLevel: 1,
+    ruined: false,
+    previousOwnerId: ownerId,
+  };
+}
+
+function ruinBase(base: TileDoc['base']) {
+  if (!base) return null;
+  return {
+    ...base,
+    ownerId: null,
+    ruined: true,
+    previousOwnerId: base.previousOwnerId ?? base.ownerId ?? null,
+  };
+}
+
+function reclaimBaseCost(base: NonNullable<TileDoc['base']>) {
+  return RECLAIM_BASE_FLAT_COST + Math.ceil(totalBaseUpgradeInvestment(base) * RECLAIM_BASE_UPGRADE_COST_RATE);
+}
+
+function totalBaseUpgradeInvestment(base: NonNullable<TileDoc['base']>) {
+  let total = 0;
+
+  for (let level = 2; level <= base.barracksLevel; level += 1) {
+    total += UPGRADE_CONFIG.barracks.find((entry) => entry.level === level)?.cost ?? 0;
+  }
+
+  for (let level = 2; level <= base.defenseLevel; level += 1) {
+    total += UPGRADE_CONFIG.baseDefense.find((entry) => entry.level === level)?.cost ?? 0;
+  }
+
+  for (let level = 2; level <= (base.offenseLevel ?? 1); level += 1) {
+    total += UPGRADE_CONFIG.baseOffense.find((entry) => entry.level === level)?.cost ?? 0;
+  }
+
+  if (base.unitQualityByType && Object.keys(base.unitQualityByType).length > 0) {
+    Object.values(base.unitQualityByType).forEach((qualityLevel) => {
+      for (let level = 2; level <= (qualityLevel ?? 1); level += 1) {
+        total += UPGRADE_CONFIG.unitQuality.find((entry) => entry.level === level)?.cost ?? 0;
+      }
+    });
+  } else {
+    for (let level = 2; level <= base.unitQualityLevel; level += 1) {
+      total += UPGRADE_CONFIG.unitQuality.find((entry) => entry.level === level)?.cost ?? 0;
+    }
+  }
+
+  return total;
+}
+
 function unitCostForPlayer(baseCost: number, player: PlayerDoc) {
   const productionDiscount = (player.talents.quartermaster ?? 0) * 0.05;
   return Math.max(1, Math.ceil(baseCost * (1 - productionDiscount)));
@@ -1865,4 +2854,38 @@ function makeUnit(typeId: keyof typeof UNIT_TYPES, qualityBonus = 0): UnitInstan
     maxHealth: type.space,
     currentHealth: type.space,
   };
+}
+
+function normalizeGameSetup(setup: GameSetupOptions) {
+  const normalizedTurnLimit = normalizeTurnLimit(setup.turnLimitRounds);
+  if (setup.mode === 'timed-simultaneous') {
+    const duration = Number(setup.roundDurationSeconds ?? 60);
+    return {
+      mode: 'timed-simultaneous' as const,
+      roundDurationSeconds: [30, 45, 60, 90, 120].includes(duration) ? duration : 60,
+      turnLimitRounds: normalizedTurnLimit,
+    };
+  }
+
+  return {
+    mode: 'turn-based' as const,
+    roundDurationSeconds: null,
+    turnLimitRounds: normalizedTurnLimit,
+  };
+}
+
+function isSimultaneousGame(game: Pick<GameDoc, 'mode'>) {
+  return game.mode === 'timed-simultaneous';
+}
+
+function canPlayerActInGame(game: GameDoc, playerId: string) {
+  return game.status === 'active' && (isSimultaneousGame(game) ? true : game.currentTurnPlayerId === playerId);
+}
+
+function actionUnavailableMessage(game: GameDoc, turnBasedMessage: string) {
+  return isSimultaneousGame(game) ? 'This round is not accepting actions right now.' : turnBasedMessage;
+}
+
+function nextRoundEndsAtMs(roundDurationSeconds: number | null | undefined) {
+  return Date.now() + Math.max(15, roundDurationSeconds ?? 60) * 1000;
 }
