@@ -45,9 +45,17 @@ export const TALENT_CONFIG: TalentConfig[] = [
     maxRanks: 5,
   },
   {
+    id: 'sentryNetwork',
+    branch: 'defense',
+    name: 'Sentry Network',
+    description: 'Extends the radius of your base sentries.',
+    perRank: '+1 sentry radius',
+    maxRanks: 3,
+  },
+  {
     id: 'logistics',
     branch: 'progress',
-    name: 'Logistics',
+    name: 'Engineering',
     description: 'Increases supplies earned from each base.',
     perRank: '+5 supplies per base',
     maxRanks: 5,

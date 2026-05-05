@@ -5,6 +5,7 @@ export const ARTILLERY_ATTACK_RANGE = 6;
 export const STANDARD_ATTACK_RANGE = 2;
 export const SNIPER_ATTACK_RANGE = 3;
 export const RECON_MOVEMENT_BONUS = 3;
+export const ENGINEER_MOVEMENT_BONUS = 1;
 export const NORMAL_ARTILLERY_RELOAD_ROUNDS = 2;
 export const ARTILLERY_UNIT_TYPES = new Set<UnitTypeId>(['artillery', 'lightArtillery', 'smokeArtillery', 'siegeArtillery']);
 export const NORMAL_ARTILLERY_UNIT_TYPES = new Set<UnitTypeId>(['artillery', 'lightArtillery']);
@@ -22,7 +23,7 @@ export function chebyshevDistance(a: TileDoc, b: TileDoc) {
 }
 
 export function movementAllowance(player?: PlayerDoc, army?: ArmyDoc | null) {
-  return 3 + (player?.talents.mobilization ?? 0) + (armyHasRecon(army) ? RECON_MOVEMENT_BONUS : 0);
+  return 3 + (player?.talents.mobilization ?? 0) + (armyHasRecon(army) ? RECON_MOVEMENT_BONUS : 0) + (isSoloEngineerArmy(army) ? ENGINEER_MOVEMENT_BONUS : 0);
 }
 
 export function canMoveArmy(
@@ -91,6 +92,10 @@ export function armyHasBuilder(army: ArmyDoc) {
 
 export function isSoloLogisticsArmy(army: ArmyDoc) {
   return army.units.length === 1 && army.units[0].typeId === 'builder';
+}
+
+export function isSoloEngineerArmy(army?: ArmyDoc | null) {
+  return Boolean(army && army.units.length === 1 && army.units[0].typeId === 'builder');
 }
 
 export function logisticsTier(army: ArmyDoc) {

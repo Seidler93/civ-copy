@@ -345,7 +345,7 @@ export default function HomePage({ onGameSelected }: HomePageProps) {
               </article>
               <article className="home-guide-card">
                 <h3>Level up</h3>
-                <p>Combat and progress earn XP. When you level, spend skill points to improve mobility, logistics, and combat power.</p>
+                <p>Combat and progress earn XP. When you level, spend skill points to improve mobility, engineering, and combat power.</p>
               </article>
             </div>
           </section>

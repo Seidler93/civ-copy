@@ -105,7 +105,7 @@ export default function TalentTreeModal({ player, isOpen, busyTalentId, onSpendT
                 const canQueue = canQueueTalent(talent.id, talent.maxRanks);
                 return (
                   <article
-                    className={`talent-node ${canQueue ? 'available' : ''} ${isLocked ? 'locked' : ''} ${
+                    className={`talent-node ${rank > 0 ? 'has-ranks' : ''} ${canQueue ? 'available' : ''} ${isLocked ? 'locked' : ''} ${
                       queuedRanks > 0 ? 'queued' : ''
                     } ${isMaxed ? 'maxed' : ''}`}
                     key={talent.id}

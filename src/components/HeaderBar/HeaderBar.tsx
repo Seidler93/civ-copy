@@ -7,6 +7,8 @@ import type { MovementSoundMode, OwnerTileColorMode, UnitHealthBarPosition, Unit
 import GameSettings from '../GameSettings/GameSettings';
 import MusicPlayer from '../MusicPlayer/MusicPlayer';
 
+type SettingsCategory = 'audio' | 'map' | 'interface' | 'match';
+
 type HeaderBarProps = {
   gameState: GameState | null;
   currentPlayerId?: string;
@@ -97,6 +99,7 @@ export default function HeaderBar({
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [devMessage, setDevMessage] = useState('');
   const [settingsMessage, setSettingsMessage] = useState('');
+  const [activeSettingsCategory, setActiveSettingsCategory] = useState<SettingsCategory>('audio');
   const settingsRef = useRef<HTMLDivElement | null>(null);
   const gameCode = gameState?.game.id ?? null;
   const selectedDevPlayerId = devPlayerId || currentPlayerId || gameState?.players[0]?.id || '';
@@ -111,6 +114,13 @@ export default function HeaderBar({
         const bStats = b.stats;
         return (bStats?.enemiesKilled ?? 0) - (aStats?.enemiesKilled ?? 0);
       }) ?? [];
+  const isMatchSettingsVisible = Boolean(gameState?.game.status === 'active' && currentPlayerId);
+  const settingsCategories: Array<{ id: SettingsCategory; label: string; description: string; visible: boolean }> = [
+    { id: 'audio', label: 'Audio', description: 'Music, effects, and movement timing', visible: true },
+    { id: 'map', label: 'Map Display', description: 'Ownership, unit HUD, and targeting cues', visible: true },
+    { id: 'interface', label: 'Interface', description: 'Simplify screens and panels', visible: true },
+    { id: 'match', label: 'Match', description: 'Pause, kick, back out, or reset', visible: isMatchSettingsVisible },
+  ];
 
   useEffect(() => {
     if (!isSettingsOpen) return undefined;
@@ -126,6 +136,12 @@ export default function HeaderBar({
       document.removeEventListener('pointerdown', handlePointerDown);
     };
   }, [isSettingsOpen]);
+
+  useEffect(() => {
+    if (activeSettingsCategory === 'match' && !isMatchSettingsVisible) {
+      setActiveSettingsCategory('audio');
+    }
+  }, [activeSettingsCategory, isMatchSettingsVisible]);
 
   async function handleDevAddSupplies() {
     if (!gameState || !selectedDevPlayerId) return;
@@ -145,12 +161,92 @@ export default function HeaderBar({
     window.dispatchEvent(new Event(command === 'toggle' ? 'grid-warfare:toggle-music' : 'grid-warfare:skip-music'));
   }
 
+  function handleUnitTileOwnerTintChange(enabled: boolean) {
+    onUnitTileOwnerTintChange(enabled);
+    if (enabled) onUnitTileOwnerColorModeChange('solid');
+  }
+
   function totalCommanderXp(level: number, currentLevelXp: number) {
     let total = currentLevelXp;
     for (let previousLevel = 1; previousLevel < level; previousLevel += 1) {
       total += xpForNextLevel(previousLevel);
     }
     return total;
+  }
+
+  function renderMovementSoundExample() {
+    return (
+      <span className="settings-example movement-sound-example" aria-hidden="true">
+        {movementSoundMode === 'tile' ? (
+          <>
+            <span>Step</span>
+            <span>Step</span>
+            <span>Step</span>
+          </>
+        ) : (
+          <span>Move sound</span>
+        )}
+      </span>
+    );
+  }
+
+  function renderStatPositionExample() {
+    return (
+      <span className={`settings-example unit-stat-position-example ${unitStatDisplayMode}`} aria-hidden="true">
+        {unitStatDisplayMode === 'bar' ? (
+          <>
+            <span className="example-health-row">
+              <span className="example-health-fill" />
+              <span>A8</span>
+              <span>D5</span>
+            </span>
+            <span className="example-unit-dot" />
+          </>
+        ) : (
+          <>
+            <span className="example-corner-stat left">A8</span>
+            <span className="example-corner-stat right">D5</span>
+            <span className="example-unit-dot" />
+          </>
+        )}
+      </span>
+    );
+  }
+
+  function renderHealthPositionExample() {
+    return (
+      <span className={`settings-example health-position-example ${unitHealthBarPosition}`} aria-hidden="true">
+        {unitHealthBarPosition === 'top' && (
+          <span className="example-health-row">
+            <span className="example-health-fill" />
+          </span>
+        )}
+        <span className="example-unit-dot" />
+        {unitHealthBarPosition === 'bottom' && (
+          <span className="example-health-row">
+            <span className="example-health-fill" />
+          </span>
+        )}
+      </span>
+    );
+  }
+
+  function renderStatLabelExample() {
+    return (
+      <span className="settings-example label-style-example" aria-hidden="true">
+        {unitStatLabelMode === 'icons' ? (
+          <>
+            <span>Sword 8</span>
+            <span>Shield 5</span>
+          </>
+        ) : (
+          <>
+            <span>A8</span>
+            <span>D5</span>
+          </>
+        )}
+      </span>
+    );
   }
 
   return (
@@ -239,6 +335,23 @@ export default function HeaderBar({
                 </div>
 
                 <div className="settings-modal-grid">
+                  <nav className="settings-category-list" aria-label="Settings categories">
+                    {settingsCategories
+                      .filter((category) => category.visible)
+                      .map((category) => (
+                        <button
+                          className={activeSettingsCategory === category.id ? 'active' : ''}
+                          type="button"
+                          key={category.id}
+                          onClick={() => setActiveSettingsCategory(category.id)}
+                        >
+                          <strong>{category.label}</strong>
+                          <span>{category.description}</span>
+                        </button>
+                      ))}
+                  </nav>
+                  <div className="settings-category-content">
+                  {activeSettingsCategory === 'audio' && (
                   <section className="settings-section">
                     <div className="settings-section-heading">
                       <p className="eyebrow">Audio</p>
@@ -288,16 +401,21 @@ export default function HeaderBar({
                         <strong>Movement sound timing</strong>
                         <em>Choose one sound for the whole move, or a quicker step sound for each tile crossed.</em>
                       </span>
-                      <select
-                        value={movementSoundMode}
-                        onChange={(event) => onMovementSoundModeChange(event.target.value as MovementSoundMode)}
-                      >
-                        <option value="move">Once per movement</option>
-                        <option value="tile">Once per tile</option>
-                      </select>
+                      <span className="settings-select-with-example">
+                        <select
+                          value={movementSoundMode}
+                          onChange={(event) => onMovementSoundModeChange(event.target.value as MovementSoundMode)}
+                        >
+                          <option value="move">Once per movement</option>
+                          <option value="tile">Once per tile</option>
+                        </select>
+                        {renderMovementSoundExample()}
+                      </span>
                     </label>
                   </section>
+                  )}
 
+                  {activeSettingsCategory === 'map' && (
                   <section className="settings-section">
                     <div className="settings-section-heading">
                       <p className="eyebrow">Map Display</p>
@@ -310,54 +428,18 @@ export default function HeaderBar({
                           <input
                             type="checkbox"
                             checked={unitTileOwnerTintEnabled}
-                            onChange={(event) => onUnitTileOwnerTintChange(event.target.checked)}
+                            onChange={(event) => handleUnitTileOwnerTintChange(event.target.checked)}
                           />
                           <span className="slide-toggle-track" aria-hidden="true" />
                         </span>
                         <span className="settings-option-copy">
                           <strong>Tint occupied tiles</strong>
-                          <em>
-                            Shows occupied tiles in the owning player's color. Overlay keeps terrain texture visible;
-                            solid color makes ownership louder and easier to scan.
-                          </em>
+                          <em>Shows occupied tiles in the owning player's color with a solid color treatment for faster ownership scanning.</em>
                         </span>
-                      </label>
-                      <div className="ownership-display-modes" aria-label="Ownership tile display style">
-                        <button
-                          type="button"
-                          className={unitTileOwnerColorMode === 'overlay' ? 'mode-active' : ''}
-                          disabled={!unitTileOwnerTintEnabled}
-                          onClick={() => onUnitTileOwnerColorModeChange('overlay')}
-                        >
-                          Overlay
-                        </button>
-                        <button
-                          type="button"
-                          className={unitTileOwnerColorMode === 'solid' ? 'mode-active' : ''}
-                          disabled={!unitTileOwnerTintEnabled}
-                          onClick={() => onUnitTileOwnerColorModeChange('solid')}
-                        >
-                          Solid color
-                        </button>
-                      </div>
-                      <label className="range-setting ownership-range">
-                        <span className="settings-option-copy">
-                          <strong>Overlay intensity</strong>
-                          <em>Higher values make ownership stronger while keeping terrain art underneath.</em>
-                        </span>
-                        <span>{unitTileOwnerTintIntensity}%</span>
-                        <input
-                          type="range"
-                          min="4"
-                          max="100"
-                          value={unitTileOwnerTintIntensity}
-                          disabled={!unitTileOwnerTintEnabled || unitTileOwnerColorMode !== 'overlay'}
-                          onChange={(event) => onUnitTileOwnerTintIntensityChange(Number(event.target.value))}
-                        />
                       </label>
                       <label className="range-setting ownership-range">
                         <span className="settings-option-copy">
-                          <strong>Solid color intensity</strong>
+                          <strong>Color intensity</strong>
                           <em>Higher values replace more of the terrain tile with the owning player's color.</em>
                         </span>
                         <span>{unitTileOwnerSolidIntensity}%</span>
@@ -366,7 +448,7 @@ export default function HeaderBar({
                           min="4"
                           max="100"
                           value={unitTileOwnerSolidIntensity}
-                          disabled={!unitTileOwnerTintEnabled || unitTileOwnerColorMode !== 'solid'}
+                          disabled={!unitTileOwnerTintEnabled}
                           onChange={(event) => onUnitTileOwnerSolidIntensityChange(Number(event.target.value))}
                         />
                       </label>
@@ -383,14 +465,8 @@ export default function HeaderBar({
                               style={
                                 {
                                   '--preview-owner-color': color,
-                                  '--preview-owner-tint':
-                                    unitTileOwnerTintEnabled && unitTileOwnerColorMode === 'overlay'
-                                      ? `${unitTileOwnerTintIntensity}%`
-                                      : '0%',
-                                  '--preview-owner-solid':
-                                    unitTileOwnerTintEnabled && unitTileOwnerColorMode === 'solid'
-                                      ? `${unitTileOwnerSolidIntensity}%`
-                                      : '0%',
+                                  '--preview-owner-tint': '0%',
+                                  '--preview-owner-solid': unitTileOwnerTintEnabled ? `${unitTileOwnerSolidIntensity}%` : '0%',
                                 } as CSSProperties
                               }
                             >
@@ -436,44 +512,34 @@ export default function HeaderBar({
                         <strong>Unit attack and defense labels</strong>
                         <em>Show attack and defense beside the top health bar, or keep them in the tile corners.</em>
                       </span>
-                      <div className="ownership-display-modes" aria-label="Unit stat label position">
-                        <button
-                          type="button"
-                          className={unitStatDisplayMode === 'bar' ? 'mode-active' : ''}
-                          onClick={() => onUnitStatDisplayModeChange('bar')}
+                      <span className="settings-select-with-example">
+                        <select
+                          aria-label="Unit stat label position"
+                          value={unitStatDisplayMode}
+                          onChange={(event) => onUnitStatDisplayModeChange(event.target.value as UnitStatDisplayMode)}
                         >
-                          On health bar
-                        </button>
-                        <button
-                          type="button"
-                          className={unitStatDisplayMode === 'corners' ? 'mode-active' : ''}
-                          onClick={() => onUnitStatDisplayModeChange('corners')}
-                        >
-                          Tile corners
-                        </button>
-                      </div>
+                          <option value="bar">On health bar</option>
+                          <option value="corners">Tile corners</option>
+                        </select>
+                        {renderStatPositionExample()}
+                      </span>
                     </div>
                     <div className="settings-option">
                       <span className="settings-option-copy">
                         <strong>Unit health bar position</strong>
                         <em>Anchor the health bar display above the unit art or below it.</em>
                       </span>
-                      <div className="ownership-display-modes" aria-label="Unit health bar position">
-                        <button
-                          type="button"
-                          className={unitHealthBarPosition === 'top' ? 'mode-active' : ''}
-                          onClick={() => onUnitHealthBarPositionChange('top')}
+                      <span className="settings-select-with-example">
+                        <select
+                          aria-label="Unit health bar position"
+                          value={unitHealthBarPosition}
+                          onChange={(event) => onUnitHealthBarPositionChange(event.target.value as UnitHealthBarPosition)}
                         >
-                          Top
-                        </button>
-                        <button
-                          type="button"
-                          className={unitHealthBarPosition === 'bottom' ? 'mode-active' : ''}
-                          onClick={() => onUnitHealthBarPositionChange('bottom')}
-                        >
-                          Bottom
-                        </button>
-                      </div>
+                          <option value="top">Top</option>
+                          <option value="bottom">Bottom</option>
+                        </select>
+                        {renderHealthPositionExample()}
+                      </span>
                     </div>
                     <label className="checkbox-setting settings-option">
                       <span className="slide-toggle">
@@ -494,22 +560,17 @@ export default function HeaderBar({
                         <strong>Attack and defense icon style</strong>
                         <em>Use sword and shield icons for combat values, or switch back to classic A and D labels.</em>
                       </span>
-                      <div className="ownership-display-modes" aria-label="Unit stat label style">
-                        <button
-                          type="button"
-                          className={unitStatLabelMode === 'icons' ? 'mode-active' : ''}
-                          onClick={() => onUnitStatLabelModeChange('icons')}
+                      <span className="settings-select-with-example">
+                        <select
+                          aria-label="Unit stat label style"
+                          value={unitStatLabelMode}
+                          onChange={(event) => onUnitStatLabelModeChange(event.target.value as UnitStatLabelMode)}
                         >
-                          Sword + Shield
-                        </button>
-                        <button
-                          type="button"
-                          className={unitStatLabelMode === 'letters' ? 'mode-active' : ''}
-                          onClick={() => onUnitStatLabelModeChange('letters')}
-                        >
-                          A / D
-                        </button>
-                      </div>
+                          <option value="icons">Sword + Shield</option>
+                          <option value="letters">A / D</option>
+                        </select>
+                        {renderStatLabelExample()}
+                      </span>
                     </div>
                     <label className="checkbox-setting settings-option">
                       <span className="slide-toggle">
@@ -526,7 +587,9 @@ export default function HeaderBar({
                       </span>
                     </label>
                   </section>
+                  )}
 
+                  {activeSettingsCategory === 'interface' && (
                   <section className="settings-section">
                     <div className="settings-section-heading">
                       <p className="eyebrow">Interface</p>
@@ -548,8 +611,9 @@ export default function HeaderBar({
                       </span>
                     </label>
                   </section>
+                  )}
 
-                  {gameState?.game.status === 'active' && currentPlayerId && (
+                  {activeSettingsCategory === 'match' && gameState?.game.status === 'active' && currentPlayerId && (
                     <section className="settings-section settings-game-controls">
                       <div className="settings-section-heading">
                         <p className="eyebrow">Match</p>
@@ -565,6 +629,7 @@ export default function HeaderBar({
                       {settingsMessage && <p className="settings-message">{settingsMessage}</p>}
                     </section>
                   )}
+                  </div>
                 </div>
               </div>
             )}

@@ -59,7 +59,7 @@ export const UNIT_TYPES: Record<UnitTypeId, UnitTypeConfig> = {
   },
   builder: {
     id: 'builder',
-    name: 'Logistics',
+    name: 'Engineer',
     cost: 20,
     space: 10,
     attack: 1,

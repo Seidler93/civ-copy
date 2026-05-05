@@ -5,6 +5,7 @@ import {
   setLobbyPlayerColor,
   setLobbyPlayerReady,
   startGame,
+  transferLobbyHost,
 } from '../firebase/gameService';
 import type { GameState } from '../types/gameTypes';
 
@@ -17,6 +18,7 @@ interface LobbyPageProps {
 export default function LobbyPage({ gameState, currentPlayerId, onLeave }: LobbyPageProps) {
   const [message, setMessage] = useState<string | null>(null);
   const [busyAction, setBusyAction] = useState<string | null>(null);
+  const [openPlayerMenuId, setOpenPlayerMenuId] = useState<string | null>(null);
   const currentPlayer = gameState.players.find((player) => player.id === currentPlayerId);
   const isHost = gameState.game.hostPlayerId === currentPlayerId;
   const enoughPlayers = gameState.players.length >= 2;
@@ -27,6 +29,7 @@ export default function LobbyPage({ gameState, currentPlayerId, onLeave }: Lobby
   const runLobbyAction = async (actionId: string, action: () => Promise<void>) => {
     setBusyAction(actionId);
     setMessage(null);
+    setOpenPlayerMenuId(null);
     try {
       await action();
     } catch (error) {
@@ -125,16 +128,46 @@ export default function LobbyPage({ gameState, currentPlayerId, onLeave }: Lobby
               <div className="lobby-player-actions">
                 {player.id === gameState.game.hostPlayerId && <span className="tag">Host</span>}
                 <span className={`tag ${player.isReady ? 'ready-tag' : 'waiting-tag'}`}>{player.isReady ? 'Ready' : 'Not ready'}</span>
-                {isHost && player.id !== currentPlayerId && (
+                <div className="lobby-player-menu-wrap">
                   <button
-                    className="tiny-danger-button"
+                    className="icon-menu-button"
                     type="button"
                     disabled={Boolean(busyAction)}
-                    onClick={() => runLobbyAction(`kick-${player.id}`, () => kickLobbyPlayer(gameState.game.id, currentPlayerId, player.id))}
+                    aria-label={`Open ${player.name} player options`}
+                    aria-expanded={openPlayerMenuId === player.id}
+                    onClick={() => setOpenPlayerMenuId((openId) => (openId === player.id ? null : player.id))}
                   >
-                    Kick
+                    ...
                   </button>
-                )}
+                  {openPlayerMenuId === player.id && (
+                    <div className="lobby-player-menu">
+                      <div className="lobby-player-menu-title">{player.name}</div>
+                      {isHost && player.id !== currentPlayerId ? (
+                        <>
+                          <button
+                            type="button"
+                            disabled={Boolean(busyAction)}
+                            onClick={() => runLobbyAction(`host-${player.id}`, () => transferLobbyHost(gameState.game.id, currentPlayerId, player.id))}
+                          >
+                            Make Host
+                          </button>
+                          <button
+                            className="danger-menu-item"
+                            type="button"
+                            disabled={Boolean(busyAction)}
+                            onClick={() => runLobbyAction(`kick-${player.id}`, () => kickLobbyPlayer(gameState.game.id, currentPlayerId, player.id))}
+                          >
+                            Kick Player
+                          </button>
+                        </>
+                      ) : (
+                        <span className="lobby-player-menu-note">
+                          {player.id === currentPlayerId ? 'This is you.' : 'Only the host can manage players.'}
+                        </span>
+                      )}
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
           ))}

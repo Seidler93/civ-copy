@@ -33,7 +33,7 @@ export default function App() {
     return Number.isFinite(saved) ? Math.min(100, Math.max(4, saved)) : 60;
   });
   const [unitTileOwnerColorMode, setUnitTileOwnerColorMode] = useState<OwnerTileColorMode>(
-    () => (localStorage.getItem('unitTileOwnerColorMode') === 'solid' ? 'solid' : 'overlay'),
+    () => 'solid',
   );
   const [unitTileOwnerSolidIntensity, setUnitTileOwnerSolidIntensity] = useState(() => {
     const saved = Number(localStorage.getItem('unitTileOwnerSolidIntensity'));

@@ -390,7 +390,7 @@ export async function devSpawnUnitAtTile(gameId: string, playerId: string, unitT
     const playerArmiesSnapshot = await getDocs(query(collection(db, 'games', gameId, 'armies'), where('ownerId', '==', playerId)));
     const playerArmies = playerArmiesSnapshot.docs.map((armyDoc) => ({ id: armyDoc.id, ...armyDoc.data() }) as ArmyDoc);
     if (unitTypeId === 'builder' && deployedUnitTypeCount(playerArmies, playerId, 'builder') >= MAX_LOGISTICS_UNITS) {
-      throw new Error(`You can only have ${MAX_LOGISTICS_UNITS} Logistics squads in play.`);
+      throw new Error(`You can only have ${MAX_LOGISTICS_UNITS} Engineer squads in play.`);
     }
     if (ARTILLERY_UNIT_TYPES.has(unitTypeId) && deployedArtilleryCount(playerArmies, playerId) >= MAX_ARTILLERY_UNITS) {
       throw new Error(`You can only have ${MAX_ARTILLERY_UNITS} artillery squads in play.`);
@@ -490,6 +490,37 @@ export async function kickLobbyPlayer(gameId: string, hostPlayerId: string, targ
     if (targetPlayerId === game.hostPlayerId) throw new Error('The host cannot be kicked.');
     if (!targetSnap.exists()) throw new Error('That player already left.');
     transaction.delete(targetRef);
+  });
+}
+
+export async function transferLobbyHost(gameId: string, hostPlayerId: string, targetPlayerId: string) {
+  await runTransaction(db, async (transaction) => {
+    const gameRef = doc(db, 'games', gameId);
+    const targetRef = doc(db, 'games', gameId, 'players', targetPlayerId);
+    const [gameSnap, targetSnap] = await Promise.all([transaction.get(gameRef), transaction.get(targetRef)]);
+    if (!gameSnap.exists()) throw new Error('Game not found.');
+    const game = { id: gameSnap.id, ...gameSnap.data() } as GameDoc;
+    if (game.status !== 'lobby') throw new Error('Host can only be changed before the game starts.');
+    if (game.hostPlayerId !== hostPlayerId) throw new Error('Only the host can assign a new host.');
+    if (!targetSnap.exists()) throw new Error('That player already left.');
+    transaction.update(gameRef, { hostPlayerId: targetPlayerId });
+  });
+}
+
+export async function transferGameHost(gameId: string, hostPlayerId: string, targetPlayerId: string) {
+  await runTransaction(db, async (transaction) => {
+    const gameRef = doc(db, 'games', gameId);
+    const targetRef = doc(db, 'games', gameId, 'players', targetPlayerId);
+    const [gameSnap, targetSnap] = await Promise.all([transaction.get(gameRef), transaction.get(targetRef)]);
+    if (!gameSnap.exists()) throw new Error('Game not found.');
+    const game = { id: gameSnap.id, ...gameSnap.data() } as GameDoc;
+    if (game.status !== 'active') throw new Error('Host can only be changed during an active game.');
+    if (game.hostPlayerId !== hostPlayerId) throw new Error('Only the host can assign a new host.');
+    if (targetPlayerId === hostPlayerId) throw new Error('You are already the host.');
+    if (!targetSnap.exists()) throw new Error('That player is no longer in the game.');
+    const targetPlayer = { id: targetSnap.id, ...targetSnap.data() } as PlayerDoc;
+    if (targetPlayer.isEliminated) throw new Error('Eliminated players cannot become host.');
+    transaction.update(gameRef, { hostPlayerId: targetPlayerId });
   });
 }
 
@@ -844,6 +875,8 @@ export async function moveArmy(gameId: string, armyId: string, targetTileId: str
     const tiles = tilesSnapshot.docs.map((tileDoc) => ({ id: tileDoc.id, ...tileDoc.data() }) as TileDoc);
     const armiesSnapshot = await getDocs(collection(db, 'games', gameId, 'armies'));
     const armies = armiesSnapshot.docs.map((armyDoc) => ({ id: armyDoc.id, ...armyDoc.data() }) as ArmyDoc);
+    const playersSnapshot = await getDocs(collection(db, 'games', gameId, 'players'));
+    const players = playersSnapshot.docs.map((playerDoc) => ({ id: playerDoc.id, ...playerDoc.data() }) as PlayerDoc);
 
     if (!canPlayerActInGame(game, playerId)) throw new Error(actionUnavailableMessage(game, 'It is not your turn.'));
     if (army.ownerId !== playerId) throw new Error('You do not control that unit.');
@@ -855,7 +888,7 @@ export async function moveArmy(gameId: string, armyId: string, targetTileId: str
     const mineDamage = triggeredMineTile?.mine?.damage ?? ANTI_VEHICLE_MINE_DAMAGE;
     const mineTriggers = Boolean(triggeredMineTile);
     const movedUnits = mineTriggers ? damageTankUnits(army.units, mineDamage) : army.units;
-    const sentryExchange = resolveSentryMoveExchange(game, player, army, path, movedUnits, tiles);
+    const sentryExchange = resolveSentryMoveExchange(game, player, army, path, movedUnits, tiles, players);
     const sentryAttack = sentryExchange.sentryAttack;
     const sentryDamage = sentryExchange.sentryDamage;
     const finalUnits = sentryExchange.finalUnits;
@@ -1525,7 +1558,7 @@ export async function recruitUnitAtBase(gameId: string, baseTileId: string, unit
       throw new Error(`You already have the maximum ${MAX_DEPLOYED_UNITS} squads deployed.`);
     }
     if (unitTypeId === 'builder' && deployedUnitTypeCount(allArmies, playerId, 'builder') >= MAX_LOGISTICS_UNITS) {
-      throw new Error(`You can only have ${MAX_LOGISTICS_UNITS} Logistics squads in play.`);
+      throw new Error(`You can only have ${MAX_LOGISTICS_UNITS} Engineer squads in play.`);
     }
     if (ARTILLERY_UNIT_TYPES.has(unitTypeId) && deployedArtilleryCount(allArmies, playerId) >= MAX_ARTILLERY_UNITS) {
       throw new Error(`You can only have ${MAX_ARTILLERY_UNITS} artillery squads in play.`);
@@ -1678,7 +1711,7 @@ export async function recruitUnitCompositionAtBase(
       compositionLogisticsCount > 0 &&
       deployedUnitTypeCount(allArmies, playerId, 'builder') + compositionLogisticsCount > MAX_LOGISTICS_UNITS
     ) {
-      throw new Error(`You can only have ${MAX_LOGISTICS_UNITS} Logistics squads in play.`);
+      throw new Error(`You can only have ${MAX_LOGISTICS_UNITS} Engineer squads in play.`);
     }
 
     const neighborTiles = await Promise.all(
@@ -1752,16 +1785,16 @@ export async function buildBaseWithBuilder(gameId: string, builderArmyId: string
     const player = { id: playerSnap.id, ...playerSnap.data() } as PlayerDoc;
     const tileRef = doc(db, 'games', gameId, 'tiles', builderArmy.tileId);
     const tileSnap = await transaction.get(tileRef);
-    if (!tileSnap.exists()) throw new Error('Logistics tile is missing.');
+    if (!tileSnap.exists()) throw new Error('Engineer tile is missing.');
     const tile = { id: tileSnap.id, ...tileSnap.data() } as TileDoc;
 
     if (!canPlayerActInGame(game, playerId)) throw new Error(actionUnavailableMessage(game, 'You can only build during your turn.'));
-    if (builderArmy.ownerId !== playerId) throw new Error('You do not control that logistics squad.');
-    if (builderArmy.hasActedThisTurn) throw new Error('That logistics squad has already acted this turn.');
+    if (builderArmy.ownerId !== playerId) throw new Error('You do not control that Engineer squad.');
+    if (builderArmy.hasActedThisTurn) throw new Error('That Engineer squad has already acted this turn.');
     if (builderArmy.units.length !== 1 || builderArmy.units[0].typeId !== 'builder') {
-      throw new Error('Only a solo Logistics squad can build a base.');
+      throw new Error('Only a solo Engineer squad can build a base.');
     }
-    if (!canLogisticsBuildBase(builderArmy)) throw new Error('This Logistics squad cannot build bases yet.');
+    if (!canLogisticsBuildBase(builderArmy)) throw new Error('This Engineer squad cannot build bases yet.');
     if (tile.base) throw new Error('There is already a base on this tile.');
     if (player.supplies < BUILD_BASE_COST) throw new Error(`You need ${BUILD_BASE_COST} supplies to build a base.`);
 
@@ -1811,16 +1844,16 @@ export async function reclaimBaseWithBuilder(gameId: string, builderArmyId: stri
     const player = { id: playerSnap.id, ...playerSnap.data() } as PlayerDoc;
     const tileRef = doc(db, 'games', gameId, 'tiles', builderArmy.tileId);
     const tileSnap = await transaction.get(tileRef);
-    if (!tileSnap.exists()) throw new Error('Logistics tile is missing.');
+    if (!tileSnap.exists()) throw new Error('Engineer tile is missing.');
     const tile = { id: tileSnap.id, ...tileSnap.data() } as TileDoc;
 
     if (!canPlayerActInGame(game, playerId)) throw new Error(actionUnavailableMessage(game, 'You can only reclaim during your turn.'));
-    if (builderArmy.ownerId !== playerId) throw new Error('You do not control that logistics squad.');
-    if (builderArmy.hasActedThisTurn) throw new Error('That logistics squad has already acted this turn.');
+    if (builderArmy.ownerId !== playerId) throw new Error('You do not control that Engineer squad.');
+    if (builderArmy.hasActedThisTurn) throw new Error('That Engineer squad has already acted this turn.');
     if (builderArmy.units.length !== 1 || builderArmy.units[0].typeId !== 'builder') {
-      throw new Error('Only a solo Logistics squad can reclaim a ruined base.');
+      throw new Error('Only a solo Engineer squad can reclaim a ruined base.');
     }
-    if (!canLogisticsBuildBase(builderArmy)) throw new Error('This Logistics squad cannot reclaim bases yet.');
+    if (!canLogisticsBuildBase(builderArmy)) throw new Error('This Engineer squad cannot reclaim bases yet.');
     if (!tile.base?.ruined) throw new Error('There is no ruined base on this tile.');
     const tilesSnapshot = await getDocs(collection(db, 'games', gameId, 'tiles'));
     const ownedBaseCount = tilesSnapshot.docs
@@ -1868,16 +1901,16 @@ export async function buildTrenchWithBuilder(gameId: string, builderArmyId: stri
     const player = { id: playerSnap.id, ...playerSnap.data() } as PlayerDoc;
     const tileRef = doc(db, 'games', gameId, 'tiles', builderArmy.tileId);
     const tileSnap = await transaction.get(tileRef);
-    if (!tileSnap.exists()) throw new Error('Logistics tile is missing.');
+    if (!tileSnap.exists()) throw new Error('Engineer tile is missing.');
     const tile = { id: tileSnap.id, ...tileSnap.data() } as TileDoc;
 
     if (!canPlayerActInGame(game, playerId)) throw new Error(actionUnavailableMessage(game, 'You can only build during your turn.'));
-    if (builderArmy.ownerId !== playerId) throw new Error('You do not control that logistics squad.');
-    if (builderArmy.hasActedThisTurn) throw new Error('That logistics squad has already acted this turn.');
+    if (builderArmy.ownerId !== playerId) throw new Error('You do not control that Engineer squad.');
+    if (builderArmy.hasActedThisTurn) throw new Error('That Engineer squad has already acted this turn.');
     if (builderArmy.units.length !== 1 || builderArmy.units[0].typeId !== 'builder') {
-      throw new Error('Only a solo Logistics squad can build a trench.');
+      throw new Error('Only a solo Engineer squad can build a trench.');
     }
-    if (!canLogisticsBuildTrench(builderArmy)) throw new Error('Logistics needs to be L2 to build trenches.');
+    if (!canLogisticsBuildTrench(builderArmy)) throw new Error('Engineer needs to be L2 to build trenches.');
     if (tile.trench) throw new Error('There is already a trench on this tile.');
     if (isImpassableTerrain(tile)) throw new Error('You cannot build a trench on this terrain.');
     if (player.supplies < BUILD_TRENCH_COST) throw new Error(`You need ${BUILD_TRENCH_COST} supplies to build a trench.`);
@@ -1888,7 +1921,7 @@ export async function buildTrenchWithBuilder(gameId: string, builderArmyId: stri
     transaction.update(playerRef, { supplies: player.supplies - BUILD_TRENCH_COST });
     transaction.update(builderArmyRef, { hasActedThisTurn: true });
 
-    return `Logistics squad dug a trench for ${BUILD_TRENCH_COST} supplies. Units on this tile gain +${TRENCH_ATTACK_BONUS} attack and +${TRENCH_DEFENSE_BONUS} defense.`;
+    return `Engineer squad dug a trench for ${BUILD_TRENCH_COST} supplies. Units on this tile gain +${TRENCH_ATTACK_BONUS} attack and +${TRENCH_DEFENSE_BONUS} defense.`;
   });
 }
 
@@ -1911,17 +1944,17 @@ export async function scavengeSuppliesWithBuilder(gameId: string, builderArmyId:
     const player = { id: playerSnap.id, ...playerSnap.data() } as PlayerDoc;
 
     if (!canPlayerActInGame(game, playerId)) throw new Error(actionUnavailableMessage(game, 'You can only scavenge during your turn.'));
-    if (builderArmy.ownerId !== playerId) throw new Error('You do not control that logistics squad.');
-    if (builderArmy.hasActedThisTurn) throw new Error('That logistics squad has already acted this turn.');
+    if (builderArmy.ownerId !== playerId) throw new Error('You do not control that Engineer squad.');
+    if (builderArmy.hasActedThisTurn) throw new Error('That Engineer squad has already acted this turn.');
     if (builderArmy.units.length !== 1 || builderArmy.units[0].typeId !== 'builder') {
-      throw new Error('Only a solo Logistics squad can scavenge supplies.');
+      throw new Error('Only a solo Engineer squad can scavenge supplies.');
     }
-    if (!canLogisticsScavenge(builderArmy)) throw new Error('Logistics needs to be L3 to scavenge supplies.');
+    if (!canLogisticsScavenge(builderArmy)) throw new Error('Engineer needs to be L3 to scavenge supplies.');
 
     transaction.update(playerRef, { supplies: player.supplies + LOGISTICS_SCAVENGE_SUPPLIES });
     transaction.update(builderArmyRef, { hasActedThisTurn: true });
 
-    return `Logistics squad scavenged +${LOGISTICS_SCAVENGE_SUPPLIES} supplies.`;
+    return `Engineer squad scavenged +${LOGISTICS_SCAVENGE_SUPPLIES} supplies.`;
   });
 }
 
@@ -2536,7 +2569,7 @@ function processQueuedMoveOrders(game: GameDoc, players: PlayerDoc[], tiles: Til
 
     const finalTile = resolveQueuedMoveDestination(path, player, army);
     if (finalTile) {
-      applyQueuedMove(game, player, army, startTile, finalTile, nextTiles, nextArmies, playerStatDeltas);
+      applyQueuedMove(game, players, player, army, startTile, finalTile, nextTiles, nextArmies, playerStatDeltas);
     }
 
     const currentTile = nextTiles.find((tile) => tile.id === army.tileId);
@@ -2618,6 +2651,7 @@ function resolveQueuedMoveDestination(path: TileDoc[], player: PlayerDoc, army: 
 
 function applyQueuedMove(
   game: GameDoc,
+  players: PlayerDoc[],
   player: PlayerDoc,
   army: ArmyDoc,
   fromTile: TileDoc,
@@ -2632,7 +2666,7 @@ function applyQueuedMove(
   const mineDamage = triggeredMineTile?.mine?.damage ?? ANTI_VEHICLE_MINE_DAMAGE;
   const mineTriggers = Boolean(triggeredMineTile);
   const movedUnits = mineTriggers ? damageTankUnits(army.units, mineDamage) : army.units;
-  const sentryExchange = resolveSentryMoveExchange(game, player, army, path, movedUnits, tiles);
+  const sentryExchange = resolveSentryMoveExchange(game, player, army, path, movedUnits, tiles, players);
   const finalUnits = sentryExchange.finalUnits;
   const unitsLost = Math.max(0, army.units.length - finalUnits.length);
   if (unitsLost > 0) addPlayerStatDelta(playerStatDeltas, army.ownerId, { unitsLost });
@@ -3311,11 +3345,12 @@ function resolveSentryMoveExchange(
   path: TileDoc[],
   movedUnits: UnitInstance[],
   tiles: TileDoc[],
+  players: PlayerDoc[],
 ) {
   const trigger =
     movedUnits.length > 0
       ? path
-          .map((tile) => ({ tile, sentryAttack: strongestSentryAttackAgainst(tile, army.ownerId, tiles, game.turnNumber) }))
+          .map((tile) => ({ tile, sentryAttack: strongestSentryAttackAgainst(tile, army.ownerId, tiles, players, game.turnNumber) }))
           .find((entry) => entry.sentryAttack)
       : null;
   const sentryAttack = trigger?.sentryAttack ?? null;
@@ -3399,24 +3434,30 @@ function movementDebugLines({
   ];
 }
 
-function strongestSentryAttackAgainst(targetTile: TileDoc, movingPlayerId: string, tiles: TileDoc[], turnNumber: number) {
+function strongestSentryAttackAgainst(targetTile: TileDoc, movingPlayerId: string, tiles: TileDoc[], players: PlayerDoc[], turnNumber: number) {
   return tiles
     .filter((tile) => tile.base && !tile.base.ruined && tile.base.ownerId && tile.base.ownerId !== movingPlayerId)
     .map((tile) => {
       const offenseConfig = UPGRADE_CONFIG.baseOffense.find((level) => level.level === (tile.base!.offenseLevel ?? 1));
-      return { tile, offenseConfig };
+      const owner = players.find((player) => player.id === tile.base!.ownerId);
+      return { tile, offenseConfig, range: sentryRangeForPlayer(offenseConfig?.range ?? 0, owner) };
     })
     .filter(
-      (entry): entry is { tile: TileDoc; offenseConfig: (typeof UPGRADE_CONFIG.baseOffense)[number] } =>
+      (entry): entry is { tile: TileDoc; offenseConfig: (typeof UPGRADE_CONFIG.baseOffense)[number]; range: number } =>
         Boolean(
           entry.offenseConfig &&
             entry.offenseConfig.damage > 0 &&
             (entry.tile.base!.lastSentryTurnNumber ?? -1) !== turnNumber &&
-            chebyshevDistance(entry.tile, targetTile) <= entry.offenseConfig.range &&
+            chebyshevDistance(entry.tile, targetTile) <= entry.range &&
             hasLineOfSight(entry.tile, targetTile, tiles),
         ),
     )
     .sort((a, b) => b.offenseConfig.damage - a.offenseConfig.damage || chebyshevDistance(a.tile, targetTile) - chebyshevDistance(b.tile, targetTile))[0] ?? null;
+}
+
+function sentryRangeForPlayer(baseRange: number, player?: PlayerDoc) {
+  if (baseRange <= 0) return 0;
+  return baseRange + (player?.talents.sentryNetwork ?? 0);
 }
 
 function canPlayerActInGame(game: GameDoc, playerId: string) {

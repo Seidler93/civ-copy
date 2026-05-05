@@ -43,6 +43,8 @@ export default function ArmyPanel({
   const [openUnitMenuId, setOpenUnitMenuId] = useState<string | null>(null);
   const movementTotal = movementAllowance(owner ?? undefined, army);
   const movementRemaining = army ? Math.max(0, movementTotal - (army.movementUsedThisTurn ?? 0)) : 0;
+  const healthPercent = army ? armyHealthPercent(army.units) : 0;
+  const healthTone = healthPercent < 35 ? 'danger' : healthPercent <= 60 ? 'warning' : 'healthy';
   const canDismissFromArmy = Boolean(army && currentPlayer && army.ownerId === currentPlayer.id && isMyTurn && onDismissUnit);
   const canSeparateFromArmy = Boolean(
     army && army.units.length > 1 && currentPlayer && army.ownerId === currentPlayer.id && isMyTurn && onSeparateUnit,
@@ -62,8 +64,8 @@ export default function ArmyPanel({
               <span>Health</span>
               <strong>{armyCurrentHealth(army.units)}/{armyMaxHealth(army.units)}</strong>
             </div>
-            <div className="health-meter" aria-label={`Unit health ${armyHealthPercent(army.units)} percent`}>
-              <span style={{ width: `${armyHealthPercent(army.units)}%` }} />
+            <div className={`health-meter health-meter-${healthTone}`} aria-label={`Unit health ${healthPercent} percent`}>
+              <span style={{ width: `${healthPercent}%` }} />
             </div>
             <div className="health-row">
               <span>Unit space</span>

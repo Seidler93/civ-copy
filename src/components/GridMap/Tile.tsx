@@ -34,6 +34,7 @@ interface TileProps {
   unitHealthBarPosition: UnitHealthBarPosition;
   unitDefenseValueVisible: boolean;
   unitStatLabelMode: UnitStatLabelMode;
+  isCompactZoom: boolean;
   sentryCoverageColor: string | null;
   isFogged: boolean;
   isExploredButNotVisible: boolean;
@@ -97,6 +98,7 @@ export default function Tile({
   unitHealthBarPosition,
   unitDefenseValueVisible,
   unitStatLabelMode,
+  isCompactZoom,
   sentryCoverageColor,
   isFogged,
   isExploredButNotVisible,
@@ -173,19 +175,20 @@ export default function Tile({
   const renderStatValue = (label: string, value: number, tone: 'attack' | 'defense') => (
     <>
       <span className={showIconLabels ? `army-stat-icon army-stat-icon-${tone}` : ''}>{label}</span>
-      {value}
+      <span className="army-stat-value">{value}</span>
     </>
   );
   const showTopHealthDisplay = unitHealthBarPosition === 'top';
   const showBarStats = unitStatDisplayMode === 'bar';
+  const shouldMoveTopHealthBelowStats = showTopHealthDisplay && showBarStats && isCompactZoom;
   const healthBarMarkup = (
     <span className={`unit-hp-bar unit-hp-bar-${armyHealthTone}`} aria-label={`${armyHealth} percent health`}>
       <span style={{ width: `${armyHealth}%` }} />
     </span>
   );
   const healthDisplayMarkup = showBarStats ? (
-    <span className="army-topline" aria-hidden="true">
-      {healthBarMarkup}
+    <span className={['army-topline', shouldMoveTopHealthBelowStats ? 'army-topline-health-below' : ''].join(' ')} aria-hidden="true">
+      {!shouldMoveTopHealthBelowStats && healthBarMarkup}
       <span className="army-stat-pill" title={unitDefenseValueVisible ? 'Attack and defense power' : 'Attack power'}>
         <span className="army-top-stat army-top-stat-attack">{renderStatValue(attackLabel, armyAttackPower, 'attack')}</span>
         {unitDefenseValueVisible ? <span className="army-stat-pill-divider" aria-hidden="true" /> : null}
@@ -193,6 +196,7 @@ export default function Tile({
           <span className="army-top-stat army-top-stat-defense">{renderStatValue(defenseLabel, armyDefensePower, 'defense')}</span>
         ) : null}
       </span>
+      {shouldMoveTopHealthBelowStats && healthBarMarkup}
     </span>
   ) : (
     healthBarMarkup

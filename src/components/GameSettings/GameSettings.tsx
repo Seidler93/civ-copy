@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { backOutOfGame, kickPlayerFromGame, resetGameToLobby, setGamePaused } from '../../firebase/gameService';
+import { backOutOfGame, kickPlayerFromGame, resetGameToLobby, setGamePaused, transferGameHost } from '../../firebase/gameService';
 import type { GameDoc, PlayerDoc } from '../../types/gameTypes';
 
 interface GameSettingsProps {
@@ -12,8 +12,8 @@ interface GameSettingsProps {
 export default function GameSettings({ game, players, currentPlayerId, onMessage }: GameSettingsProps) {
   const [isBusy, setIsBusy] = useState(false);
   const [confirmingAction, setConfirmingAction] = useState<'end' | 'backout' | 'kick' | null>(null);
-  const kickablePlayers = players.filter((player) => player.id !== game.hostPlayerId && !player.isEliminated);
-  const [kickPlayerId, setKickPlayerId] = useState(kickablePlayers[0]?.id ?? '');
+  const [targetPlayerId, setTargetPlayerId] = useState('');
+  const [openPlayerMenuId, setOpenPlayerMenuId] = useState<string | null>(null);
   const isHost = game.hostPlayerId === currentPlayerId;
 
   async function handleEndGame() {
@@ -44,6 +44,7 @@ export default function GameSettings({ game, players, currentPlayerId, onMessage
 
   async function handlePauseToggle() {
     setIsBusy(true);
+    setOpenPlayerMenuId(null);
     try {
       onMessage(await setGamePaused(game.id, currentPlayerId, !game.isPaused));
     } catch (err) {
@@ -54,7 +55,7 @@ export default function GameSettings({ game, players, currentPlayerId, onMessage
   }
 
   async function handleKickPlayer() {
-    const targetPlayer = players.find((player) => player.id === kickPlayerId);
+    const targetPlayer = players.find((player) => player.id === targetPlayerId);
     if (!targetPlayer) {
       onMessage('Choose a player to kick.');
       return;
@@ -64,11 +65,33 @@ export default function GameSettings({ game, players, currentPlayerId, onMessage
     try {
       onMessage(await kickPlayerFromGame(game.id, currentPlayerId, targetPlayer.id));
       setConfirmingAction(null);
+      setTargetPlayerId('');
+      setOpenPlayerMenuId(null);
     } catch (err) {
       onMessage(err instanceof Error ? err.message : 'Could not kick player.');
     } finally {
       setIsBusy(false);
     }
+  }
+
+  async function handleTransferHost(nextHostPlayerId: string) {
+    setIsBusy(true);
+    setOpenPlayerMenuId(null);
+    try {
+      await transferGameHost(game.id, currentPlayerId, nextHostPlayerId);
+      const nextHost = players.find((player) => player.id === nextHostPlayerId);
+      onMessage(`${nextHost?.name ?? 'That player'} is now host.`);
+    } catch (err) {
+      onMessage(err instanceof Error ? err.message : 'Could not change host.');
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  function requestKickPlayer(playerId: string) {
+    setTargetPlayerId(playerId);
+    setOpenPlayerMenuId(null);
+    setConfirmingAction('kick');
   }
 
   return (
@@ -85,28 +108,75 @@ export default function GameSettings({ game, players, currentPlayerId, onMessage
               <button className="secondary" disabled={isBusy} onClick={handlePauseToggle}>
                 {game.isPaused ? 'Resume Gameplay' : 'Pause Gameplay'}
               </button>
-              {kickablePlayers.length > 0 && (
-                <div className="kick-player-control">
-                  <label>
-                    Kick player
-                    <select value={kickPlayerId} disabled={isBusy} onChange={(event) => setKickPlayerId(event.target.value)}>
-                      {kickablePlayers.map((player) => (
-                        <option value={player.id} key={player.id}>
-                          {player.name}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <button className="danger-button" disabled={isBusy || !kickPlayerId} onClick={() => setConfirmingAction('kick')}>
-                    Kick Player
-                  </button>
-                </div>
-              )}
               <button className="danger-button" disabled={isBusy} onClick={() => setConfirmingAction('end')}>
                 End Game
               </button>
             </>
           )}
+          <div className="match-party-list">
+            <div className="match-party-heading">
+              <span>Party</span>
+              <span>{players.filter((player) => !player.isEliminated).length}/{players.length} active</span>
+            </div>
+            <div className="player-list lobby-player-list match-player-list">
+              {players.map((player) => (
+                <div className={`player-row lobby-player-row match-player-row ${player.isEliminated ? 'eliminated' : ''}`} key={player.id}>
+                  <div className="lobby-player-identity">
+                    <span className="color-dot" style={{ backgroundColor: player.color }} />
+                    <span>{player.name}</span>
+                  </div>
+                  <div className="lobby-player-actions">
+                    {player.id === game.hostPlayerId && <span className="tag">Host</span>}
+                    {player.id === currentPlayerId && <span className="tag">You</span>}
+                    {player.isEliminated && <span className="tag eliminated-chip">Out</span>}
+                    <div className="lobby-player-menu-wrap">
+                      <button
+                        className="icon-menu-button"
+                        type="button"
+                        disabled={isBusy}
+                        aria-label={`Open ${player.name} player options`}
+                        aria-expanded={openPlayerMenuId === player.id}
+                        onClick={() => setOpenPlayerMenuId((openId) => (openId === player.id ? null : player.id))}
+                      >
+                        ...
+                      </button>
+                      {openPlayerMenuId === player.id && (
+                        <div className="lobby-player-menu">
+                          <div className="lobby-player-menu-title">{player.name}</div>
+                          {isHost && player.id !== currentPlayerId && !player.isEliminated ? (
+                            <>
+                              <button type="button" disabled={isBusy} onClick={() => handleTransferHost(player.id)}>
+                                Make Host
+                              </button>
+                              <button className="danger-menu-item" type="button" disabled={isBusy} onClick={() => requestKickPlayer(player.id)}>
+                                Kick Player
+                              </button>
+                            </>
+                          ) : player.id === currentPlayerId ? (
+                            <button
+                              className="danger-menu-item"
+                              type="button"
+                              disabled={isBusy}
+                              onClick={() => {
+                                setOpenPlayerMenuId(null);
+                                setConfirmingAction('backout');
+                              }}
+                            >
+                              Back Out
+                            </button>
+                          ) : (
+                            <span className="lobby-player-menu-note">
+                              {player.isEliminated ? 'This player is already out.' : 'Only the host can manage players.'}
+                            </span>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
         </>
       )}
       {confirmingAction === 'end' && (
@@ -132,10 +202,10 @@ export default function GameSettings({ game, players, currentPlayerId, onMessage
       {confirmingAction === 'kick' && (
         <div className="confirm-actions">
           <p className="settings-confirm-copy">
-            Kick {players.find((player) => player.id === kickPlayerId)?.name ?? 'this player'} and remove their units,
+            Kick {players.find((player) => player.id === targetPlayerId)?.name ?? 'this player'} and remove their units,
             bases, mines, trenches, and smoke from the map?
           </p>
-          <button className="danger-button" disabled={isBusy || !kickPlayerId} onClick={handleKickPlayer}>
+          <button className="danger-button" disabled={isBusy || !targetPlayerId} onClick={handleKickPlayer}>
             {isBusy ? 'Kicking...' : 'Confirm Kick'}
           </button>
           <button className="secondary" disabled={isBusy} onClick={() => setConfirmingAction(null)}>

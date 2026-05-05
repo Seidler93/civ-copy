@@ -21,6 +21,7 @@ export type TalentId =
   | 'coordinatedAssault'
   | 'defensiveDrills'
   | 'baseFortification'
+  | 'sentryNetwork'
   | 'logistics'
   | 'quartermaster'
   | 'mobilization';

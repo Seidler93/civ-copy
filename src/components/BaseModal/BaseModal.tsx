@@ -98,6 +98,9 @@ export default function BaseModal({
             <span>Barracks</span>
             <span className="tab-level-badge">L{sharedBarracksLevel}</span>
           </div>
+          <div className="base-upgrade-heading" role="heading" aria-level={3}>
+            Base
+          </div>
         </div>
 
         {activeTab === 'barracks' && (

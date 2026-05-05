@@ -227,7 +227,7 @@ export default function GridMap({
       .filter((entry) => entry.owner && entry.offense && entry.offense.damage > 0);
 
     sentryBases.forEach((sentryBase) => {
-      const range = sentryBase.offense!.range;
+      const range = sentryRangeForPlayer(sentryBase.offense!.range, sentryBase.owner);
       for (let y = sentryBase.tile.y - range; y <= sentryBase.tile.y + range; y += 1) {
         for (let x = sentryBase.tile.x - range; x <= sentryBase.tile.x + range; x += 1) {
           const tile = tileByCoord.get(tileIdFromCoords(x, y));
@@ -658,6 +658,7 @@ export default function GridMap({
                 unitHealthBarPosition={unitHealthBarPosition}
                 unitDefenseValueVisible={unitDefenseValueVisible}
                 unitStatLabelMode={unitStatLabelMode}
+                isCompactZoom={zoom < 0.8}
                 sentryCoverageColor={sentryCoverageByTileId.get(tile.id) ?? null}
                 isFogged={!isDiscovered}
                 isExploredButNotVisible={isDiscovered && !isVisible}
@@ -739,4 +740,9 @@ function smokeAreaIdsForOrigin(tile: TileDoc) {
     tileIdFromCoords(tile.x, tile.y + 1),
     tileIdFromCoords(tile.x + 1, tile.y + 1),
   ]);
+}
+
+function sentryRangeForPlayer(baseRange: number, player?: PlayerDoc) {
+  if (baseRange <= 0) return 0;
+  return baseRange + (player?.talents.sentryNetwork ?? 0);
 }
