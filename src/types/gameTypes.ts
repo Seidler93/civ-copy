@@ -81,6 +81,7 @@ export interface BaseState {
   unitQualityByType?: Partial<Record<UnitTypeId, number>>;
   defenseLevel: number;
   offenseLevel?: number;
+  lastSentryTurnNumber?: number | null;
   ruined?: boolean;
   previousOwnerId?: string | null;
 }

@@ -799,6 +799,9 @@ export async function moveArmy(gameId: string, armyId: string, targetTileId: str
       if (sentryExchange.baseDestroyed && sentryAttack?.tile.id === tile.id) {
         return { ...tile, base: ruinBase(tile.base), ownerId: null };
       }
+      if (sentryAttack?.tile.id === tile.id && tile.base) {
+        return { ...tile, base: { ...tile.base, lastSentryTurnNumber: game.turnNumber } };
+      }
       return tile;
     });
     const nextArmies =
@@ -821,6 +824,10 @@ export async function moveArmy(gameId: string, armyId: string, targetTileId: str
       transaction.update(doc(db, 'games', gameId, 'tiles', sentryAttack.tile.id), {
         base: ruinBase(sentryAttack.tile.base),
         ownerId: null,
+      });
+    } else if (sentryAttack?.tile.base) {
+      transaction.update(doc(db, 'games', gameId, 'tiles', sentryAttack.tile.id), {
+        base: { ...sentryAttack.tile.base, lastSentryTurnNumber: game.turnNumber },
       });
     }
     if (movedUnits.length === 0 || finalUnits.length === 0) {
@@ -1191,7 +1198,7 @@ export async function attackTile(gameId: string, attackerArmyId: string, targetT
     }
 
     const defenderCanReturnFire = Boolean(defender && isTileInAttackRange(defender, targetTile, fromTile, allTiles));
-    const isRangedArtilleryAttack = isSoloArtilleryArmy(attacker) && chebyshevDistance(fromTile, targetTile) > 1 && !defenderCanReturnFire;
+    const isRangedAttackWithoutReturnFire = chebyshevDistance(fromTile, targetTile) > 1 && !defenderCanReturnFire;
     const supportedByAdjacentArmy = supportArmies.some((supportArmy) => {
       if (supportArmy.id === attacker.id || supportArmy.ownerId !== playerId) return false;
       const supportTile = allTiles.find((tile) => tile.id === supportArmy.tileId);
@@ -1232,24 +1239,26 @@ export async function attackTile(gameId: string, attackerArmyId: string, targetT
       baseTalentDefenseBonus + baseAuraDefenseBonus + trenchDefenseBonus,
       trenchAttackBonus + artilleryFlatBonus,
     );
-    const combat = isRangedArtilleryAttack ? { ...resolvedCombat, attackerLosses: 0 } : resolvedCombat;
+    const combat = isRangedAttackWithoutReturnFire ? { ...resolvedCombat, attackerLosses: 0 } : resolvedCombat;
     const remainingAttackers = removeUnitLosses(attacker.units, combat.attackerLosses, 'attacker');
     const remainingDefenders = defender ? removeUnitLosses(defender.units, combat.defenderLosses, 'defender') : [];
+    const attackerUnitsDestroyed = attacker.units.length - remainingAttackers.length;
+    const defenderUnitsDestroyed = defender ? defender.units.length - remainingDefenders.length : 0;
     const xpGained =
       XP_ATTACK +
-      combat.defenderLosses * XP_DESTROY_UNIT +
+      defenderUnitsDestroyed * XP_DESTROY_UNIT +
       (defender && remainingDefenders.length === 0 ? XP_DESTROY_ARMY : 0) +
       (combat.baseDestroyed ? XP_DESTROY_BASE : 0);
     const suppliesGained =
-      combat.defenderLosses * SUPPLIES_DESTROY_UNIT +
+      defenderUnitsDestroyed * SUPPLIES_DESTROY_UNIT +
       (defender && remainingDefenders.length === 0 ? SUPPLIES_DESTROY_ARMY : 0) +
       (combat.baseDestroyed ? SUPPLIES_DESTROY_BASE : 0);
     const defenderSuppliesGained =
       defender && remainingAttackers.length === 0
-        ? combat.attackerLosses * SUPPLIES_DESTROY_UNIT + SUPPLIES_DESTROY_ARMY
+        ? attackerUnitsDestroyed * SUPPLIES_DESTROY_UNIT + SUPPLIES_DESTROY_ARMY
         : 0;
     const unitXpGained =
-      combat.defenderLosses * UNIT_XP_DESTROY_UNIT +
+      defenderUnitsDestroyed * UNIT_XP_DESTROY_UNIT +
       (defender && remainingDefenders.length === 0 ? UNIT_XP_DESTROY_ARMY : 0);
     const leveledAttackers = applyNormalArtilleryReload(applyUnitXp(remainingAttackers, unitXpGained), attacker, game.roundNumber);
 
@@ -1321,9 +1330,9 @@ export async function attackTile(gameId: string, attackerArmyId: string, targetT
     transaction.update(playerRef, {
       supplies: player.supplies + suppliesGained,
       stats: mergedPlayerStats(player, {
-        enemiesKilled: combat.defenderLosses,
+        enemiesKilled: defenderUnitsDestroyed,
         basesDestroyed: combat.baseDestroyed ? 1 : 0,
-        unitsLost: combat.attackerLosses,
+        unitsLost: attackerUnitsDestroyed,
       }),
       ...applyXp(player, xpGained),
     });
@@ -1333,15 +1342,15 @@ export async function attackTile(gameId: string, attackerArmyId: string, targetT
         transaction.update(doc(db, 'games', gameId, 'players', defender.ownerId), {
           supplies: defenderPlayer.supplies + defenderSuppliesGained,
           stats: mergedPlayerStats(defenderPlayer, {
-            enemiesKilled: combat.attackerLosses,
-            unitsLost: combat.defenderLosses,
+            enemiesKilled: attackerUnitsDestroyed,
+            unitsLost: defenderUnitsDestroyed,
           }),
         });
       }
-    } else if (defendingPlayer && combat.defenderLosses > 0) {
+    } else if (defendingPlayer && defenderUnitsDestroyed > 0) {
       transaction.update(doc(db, 'games', gameId, 'players', defendingOwnerId!), {
         stats: mergedPlayerStats(defendingPlayer, {
-          unitsLost: combat.defenderLosses,
+          unitsLost: defenderUnitsDestroyed,
         }),
       });
     }
@@ -1349,7 +1358,7 @@ export async function attackTile(gameId: string, attackerArmyId: string, targetT
     const resultLine =
       `Attack ${combat.attackPower} vs defense ${combat.defensePower} ` +
       `(rolls ${combat.attackRoll}/${combat.defenseRoll}). ` +
-      `Losses: you ${combat.attackerLosses}, enemy ${combat.defenderLosses}. ` +
+      `Damage: you ${combat.attackerLosses * 10}, enemy ${combat.defenderLosses * 10}. ` +
       `+${xpGained} XP, +${suppliesGained} supplies.`;
     const defenderRewardMessage =
       defenderSuppliesGained > 0 ? ` Defender earned +${defenderSuppliesGained} supplies for destroying the attacker.` : '';
@@ -2513,6 +2522,11 @@ function applyQueuedMove(
   if (sentryExchange.baseDestroyed && sentryExchange.sentryAttack) {
     sentryExchange.sentryAttack.tile.base = ruinBase(sentryExchange.sentryAttack.tile.base);
     sentryExchange.sentryAttack.tile.ownerId = null;
+  } else if (sentryExchange.sentryAttack?.tile.base) {
+    sentryExchange.sentryAttack.tile.base = {
+      ...sentryExchange.sentryAttack.tile.base,
+      lastSentryTurnNumber: game.turnNumber,
+    };
   }
 
   if (finalUnits.length === 0) {
@@ -2550,7 +2564,7 @@ function applyQueuedAttack(
   if (!defendingOwnerId) return;
 
   const defenderCanReturnFire = Boolean(defender && isTileInAttackRange(defender, targetTile, fromTile, tiles));
-  const isRangedArtilleryAttack = isSoloArtilleryArmy(attacker) && chebyshevDistance(fromTile, targetTile) > 1 && !defenderCanReturnFire;
+  const isRangedAttackWithoutReturnFire = chebyshevDistance(fromTile, targetTile) > 1 && !defenderCanReturnFire;
   const supportedByAdjacentArmy = armies.some((supportArmy) => {
     if (supportArmy.id === attacker.id || supportArmy.ownerId !== player.id) return false;
     const supportTile = tiles.find((tile) => tile.id === supportArmy.tileId);
@@ -2587,38 +2601,40 @@ function applyQueuedAttack(
     baseTalentDefenseBonus + baseAuraDefenseBonus + trenchDefenseBonus,
     trenchAttackBonus + artilleryFlatBonus,
   );
-  const combat = isRangedArtilleryAttack ? { ...resolvedCombat, attackerLosses: 0 } : resolvedCombat;
+  const combat = isRangedAttackWithoutReturnFire ? { ...resolvedCombat, attackerLosses: 0 } : resolvedCombat;
   const remainingAttackers = removeUnitLosses(attacker.units, combat.attackerLosses, 'attacker');
   const remainingDefenders = defender ? removeUnitLosses(defender.units, combat.defenderLosses, 'defender') : [];
+  const attackerUnitsDestroyed = attacker.units.length - remainingAttackers.length;
+  const defenderUnitsDestroyed = defender ? defender.units.length - remainingDefenders.length : 0;
   const xpGained =
     XP_ATTACK +
-    combat.defenderLosses * XP_DESTROY_UNIT +
+    defenderUnitsDestroyed * XP_DESTROY_UNIT +
     (defender && remainingDefenders.length === 0 ? XP_DESTROY_ARMY : 0) +
     (combat.baseDestroyed ? XP_DESTROY_BASE : 0);
   const suppliesGained =
-    combat.defenderLosses * SUPPLIES_DESTROY_UNIT +
+    defenderUnitsDestroyed * SUPPLIES_DESTROY_UNIT +
     (defender && remainingDefenders.length === 0 ? SUPPLIES_DESTROY_ARMY : 0) +
     (combat.baseDestroyed ? SUPPLIES_DESTROY_BASE : 0);
   const defenderSuppliesGained =
-    defender && remainingAttackers.length === 0 ? combat.attackerLosses * SUPPLIES_DESTROY_UNIT + SUPPLIES_DESTROY_ARMY : 0;
+    defender && remainingAttackers.length === 0 ? attackerUnitsDestroyed * SUPPLIES_DESTROY_UNIT + SUPPLIES_DESTROY_ARMY : 0;
   const unitXpGained =
-    combat.defenderLosses * UNIT_XP_DESTROY_UNIT + (defender && remainingDefenders.length === 0 ? UNIT_XP_DESTROY_ARMY : 0);
+    defenderUnitsDestroyed * UNIT_XP_DESTROY_UNIT + (defender && remainingDefenders.length === 0 ? UNIT_XP_DESTROY_ARMY : 0);
 
   addPlayerReward(playerRewards, player.id, suppliesGained, xpGained);
   addPlayerStatDelta(playerStatDeltas, player.id, {
-    enemiesKilled: combat.defenderLosses,
+    enemiesKilled: defenderUnitsDestroyed,
     basesDestroyed: combat.baseDestroyed ? 1 : 0,
-    unitsLost: combat.attackerLosses,
+    unitsLost: attackerUnitsDestroyed,
   });
   if (defender && defenderSuppliesGained > 0) {
     addPlayerReward(playerRewards, defender.ownerId, defenderSuppliesGained, 0);
     addPlayerStatDelta(playerStatDeltas, defender.ownerId, {
-      enemiesKilled: combat.attackerLosses,
-      unitsLost: combat.defenderLosses,
+      enemiesKilled: attackerUnitsDestroyed,
+      unitsLost: defenderUnitsDestroyed,
     });
-  } else if (defendingOwnerId && combat.defenderLosses > 0) {
+  } else if (defendingOwnerId && defenderUnitsDestroyed > 0) {
     addPlayerStatDelta(playerStatDeltas, defendingOwnerId, {
-      unitsLost: combat.defenderLosses,
+      unitsLost: defenderUnitsDestroyed,
     });
   }
 
@@ -3127,7 +3143,7 @@ function resolveSentryMoveExchange(
   const trigger =
     movedUnits.length > 0
       ? path
-          .map((tile) => ({ tile, sentryAttack: strongestSentryAttackAgainst(tile, army.ownerId, tiles) }))
+          .map((tile) => ({ tile, sentryAttack: strongestSentryAttackAgainst(tile, army.ownerId, tiles, game.turnNumber) }))
           .find((entry) => entry.sentryAttack)
       : null;
   const sentryAttack = trigger?.sentryAttack ?? null;
@@ -3211,7 +3227,7 @@ function movementDebugLines({
   ];
 }
 
-function strongestSentryAttackAgainst(targetTile: TileDoc, movingPlayerId: string, tiles: TileDoc[]) {
+function strongestSentryAttackAgainst(targetTile: TileDoc, movingPlayerId: string, tiles: TileDoc[], turnNumber: number) {
   return tiles
     .filter((tile) => tile.base && !tile.base.ruined && tile.base.ownerId && tile.base.ownerId !== movingPlayerId)
     .map((tile) => {
@@ -3223,6 +3239,7 @@ function strongestSentryAttackAgainst(targetTile: TileDoc, movingPlayerId: strin
         Boolean(
           entry.offenseConfig &&
             entry.offenseConfig.damage > 0 &&
+            (entry.tile.base!.lastSentryTurnNumber ?? -1) !== turnNumber &&
             chebyshevDistance(entry.tile, targetTile) <= entry.offenseConfig.range &&
             hasLineOfSight(entry.tile, targetTile, tiles),
         ),

@@ -89,20 +89,15 @@ export function resolveCombat(
     defenseFlatBonus;
   const defensePower = Math.ceil(rawDefensePower * defensePowerMultiplier);
   const margin = attackPower - defensePower;
-
-  let attackerLosses = 0;
-  let defenderLosses = 0;
   const defenderTargets = Math.max(defenderUnits.length, defendingBase ? 1 : 0);
+  const defenderLosses = damageChunksAfterDefense(attackPower, defensePower, defenderTargets);
+  const attackerLosses =
+    defenderUnits.length > 0
+      ? damageChunksAfterDefense(defensePower, attackPower, damageCapacityChunks(attackerUnits))
+      : 0;
 
-  if (margin > 0) {
-    defenderLosses = clamp(1 + Math.floor(margin / 5), 1, defenderTargets);
-    attackerLosses = defenderUnits.length > 0 ? clamp(Math.floor(defensePower / 10), 0, attackerUnits.length) : 0;
-  } else {
-    attackerLosses = clamp(1 + Math.floor(Math.abs(margin) / 6), 1, attackerUnits.length);
-    defenderLosses = defenderUnits.length > 0 ? clamp(Math.floor(attackPower / 10), 0, defenderUnits.length) : 0;
-  }
-
-  const defenderDestroyed = defenderUnits.length > 0 && defenderLosses >= defenderUnits.length;
+  const defenderDestroyed =
+    defenderUnits.length > 0 && removeUnitLosses(defenderUnits, defenderLosses, 'defender').length === 0;
   const baseDestroyed = Boolean(defendingBase && margin > 0 && (defenderUnits.length === 0 || defenderDestroyed));
 
   return {
@@ -241,6 +236,17 @@ function terrainDefenseBonus(terrainType: TerrainType) {
 function baseDefenseBonus(base: BaseState | null) {
   if (!base) return 0;
   return UPGRADE_CONFIG.baseDefense.find((level) => level.level === base.defenseLevel)?.bonus ?? 0;
+}
+
+function damageChunksAfterDefense(incomingPower: number, defensePower: number, maxDamageChunks: number) {
+  if (incomingPower <= 0 || maxDamageChunks <= 0) return 0;
+  const minimumDamage = Math.max(1, Math.ceil(incomingPower * 0.18));
+  const mitigatedDamage = incomingPower - Math.floor(defensePower * 0.65);
+  return clamp(Math.ceil(Math.max(minimumDamage, mitigatedDamage) / DAMAGE_PER_LOSS), 1, maxDamageChunks);
+}
+
+function damageCapacityChunks(units: UnitInstance[]) {
+  return Math.max(0, Math.ceil(armyCurrentHealth(units) / DAMAGE_PER_LOSS));
 }
 
 function clamp(value: number, min: number, max: number) {
