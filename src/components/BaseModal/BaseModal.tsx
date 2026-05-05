@@ -1,12 +1,12 @@
-import { type CSSProperties, useEffect, useState } from 'react';
+import { type CSSProperties, useState } from 'react';
 import { UNIT_TYPES } from '../../data/unitTypes';
 import { UNIT_COMPOSITIONS } from '../../data/unitCompositions';
-import { UPGRADE_CONFIG } from '../../data/upgradeConfig';
+import { MAX_ARTILLERY_UNITS, MAX_LOGISTICS_UNITS, UPGRADE_CONFIG } from '../../data/upgradeConfig';
 import { ARTILLERY_SQUADS, ARTILLERY_UNLOCK_BARRACKS_LEVEL } from '../../data/artilleryConfig';
 import type { ArmyDoc, PlayerDoc, TileDoc, UnitTypeId } from '../../types/gameTypes';
 import { connectedBaseSupplyBonus, connectedBaseTiles, effectiveBarracksLevel, effectiveUnitQualityLevel } from '../../utils/trenchNetwork';
 
-type BaseTab = 'barracks' | 'units' | 'quality' | 'defense' | 'artillery';
+type BaseTab = 'barracks' | 'units' | 'defense';
 type BaseUpgradeAction = 'barracks' | 'defense' | 'offense' | `quality:${UnitTypeId}`;
 
 interface BaseModalProps {
@@ -23,7 +23,7 @@ interface BaseModalProps {
 }
 
 const ARTILLERY_UNIT_ORDER = ARTILLERY_SQUADS.map((squad) => squad.unitTypeId);
-const UNIT_ORDER: UnitTypeId[] = ['gunman', 'recon', 'builder', 'sniper', 'antiVehicle', 'medic', 'tank', ...ARTILLERY_UNIT_ORDER];
+const UNIT_ORDER: UnitTypeId[] = ['gunman', 'builder', 'sniper', 'antiVehicle', 'tank', ...ARTILLERY_UNIT_ORDER];
 const BARRACKS_RECRUIT_ORDER = UNIT_ORDER.filter((unitTypeId) => !ARTILLERY_UNIT_ORDER.includes(unitTypeId));
 const SOLO_ONLY_UNITS = new Set<UnitTypeId>(['recon', 'builder', 'artillery', ...ARTILLERY_UNIT_ORDER]);
 const QUALITY_HEALTH_BONUS_PER_LEVEL = 2;
@@ -34,7 +34,6 @@ export default function BaseModal({
   armies,
   player,
   isCurrentTurn,
-  hideQualityTab,
   onRecruit,
   onRecruitComposition,
   onUpgrade,
@@ -42,12 +41,7 @@ export default function BaseModal({
 }: BaseModalProps) {
   const [activeTab, setActiveTab] = useState<BaseTab>('barracks');
   const [busyAction, setBusyAction] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (hideQualityTab && activeTab === 'quality') {
-      setActiveTab('barracks');
-    }
-  }, [activeTab, hideQualityTab]);
+  const [isBarracksUpgradePreviewed, setIsBarracksUpgradePreviewed] = useState(false);
 
   if (!tile?.base) return null;
 
@@ -64,9 +58,16 @@ export default function BaseModal({
   const currentOffenseLevel = tile.base.offenseLevel ?? 1;
   const currentOffense = UPGRADE_CONFIG.baseOffense.find((level) => level.level === currentOffenseLevel);
   const nextOffense = UPGRADE_CONFIG.baseOffense.find((level) => level.level === currentOffenseLevel + 1);
-  const isArtilleryUnlocked = sharedBarracksLevel >= ARTILLERY_UNLOCK_BARRACKS_LEVEL;
+  const defenseRequiresBarracks = Boolean(nextDefense && tile.base.barracksLevel < nextDefense.level);
+  const offenseRequiresBarracks = Boolean(nextOffense && tile.base.barracksLevel < nextOffense.level);
   const nextBarracksCost = nextBarracks?.cost ? upgradeCostForPlayer(nextBarracks.cost, player) : 0;
   const nextBarracksUnlocks = nextBarracks?.unlocks ?? [];
+  const logisticsInPlay = armies
+    .filter((army) => army.ownerId === player.id)
+    .reduce((total, army) => total + army.units.filter((unit) => unit.typeId === 'builder').length, 0);
+  const artilleryInPlay = armies
+    .filter((army) => army.ownerId === player.id)
+    .reduce((total, army) => total + army.units.filter((unit) => ARTILLERY_UNIT_ORDER.includes(unit.typeId)).length, 0);
 
   async function runAction(actionId: string, action: () => Promise<void>) {
     setBusyAction(actionId);
@@ -91,103 +92,56 @@ export default function BaseModal({
           </button>
         </div>
         <div className="base-tabs" role="tablist" aria-label="Base management">
-          <button className={activeTab === 'barracks' ? 'active' : ''} onClick={() => setActiveTab('barracks')}>
+          <div className="base-tab-static active" role="heading" aria-level={3}>
             <span>Barracks</span>
             <span className="tab-level-badge">L{sharedBarracksLevel}</span>
-          </button>
-          <button className={activeTab === 'units' ? 'active' : ''} onClick={() => setActiveTab('units')}>
-            Units
-          </button>
-          {!hideQualityTab && (
-            <button className={activeTab === 'quality' ? 'active' : ''} onClick={() => setActiveTab('quality')}>
-              Quality
-            </button>
-          )}
-          <button className={activeTab === 'defense' ? 'active' : ''} onClick={() => setActiveTab('defense')}>
-            <span>Defense</span>
-            <span className="tab-level-badge">L{tile.base.defenseLevel}</span>
-          </button>
-          <button className={activeTab === 'artillery' ? 'active' : ''} onClick={() => setActiveTab('artillery')}>
-            Artillery
-          </button>
+          </div>
         </div>
 
         {activeTab === 'barracks' && (
-          <div className="recruit-list">
-            <div
-              className={[
-                'recruit-row',
-                'upgrade-row',
-                'barracks-upgrade-row',
-                nextBarracks?.cost && player.supplies < nextBarracksCost ? 'unaffordable' : '',
-              ].join(' ')}
-            >
-              <div>
-                <strong>{nextBarracks ? `Upgrade Barracks to L${nextBarracks.level}` : 'Barracks Maxed'}</strong>
-                <p>
-                  {nextBarracks
-                    ? barracksUpgradeDescription(nextBarracks.level, nextBarracksUnlocks)
-                    : 'This base can recruit every current squad type.'}
-                  {sharedBarracksLevel > tile.base.barracksLevel
-                    ? ` Connected trenches share Barracks L${sharedBarracksLevel} here.`
-                    : ''}
-                  {supplyLineBonus > 0 ? ` Supply line bonus: +${supplyLineBonus} supplies per turn.` : ''}
-                </p>
-              </div>
-              <div className="recruit-actions">
-                <span>{nextBarracks?.cost ? nextBarracksCost : '-'}</span>
-                <button
-                  disabled={!isCurrentTurn || !nextBarracks?.cost || player.supplies < nextBarracksCost || busyAction !== null}
-                  onClick={() => runAction('barracks', () => onUpgrade('barracks'))}
-                >
-                  {busyAction === 'barracks' ? 'Upgrading...' : 'Upgrade'}
-                </button>
-              </div>
-            </div>
-            {BARRACKS_RECRUIT_ORDER.map((unitTypeId) => {
+          <div className="recruit-list barracks-recruit-grid">
+            {BARRACKS_RECRUIT_ORDER.slice(0, 4).map((unitTypeId) => {
               const unit = UNIT_TYPES[unitTypeId];
               const cost = unitCostForPlayer(unit.cost, player);
               const unlocked = unlockedUnits.has(unitTypeId);
               const canAfford = player.supplies >= cost;
+              const logisticsCapReached = unitTypeId === 'builder' && logisticsInPlay >= MAX_LOGISTICS_UNITS;
               const currentLevel = effectiveUnitQualityLevel(tile, unitTypeId, tiles, armies);
-              const localLevel = tile.base!.unitQualityByType?.[unitTypeId] ?? tile.base!.unitQualityLevel ?? 1;
-              const nextQuality = UPGRADE_CONFIG.unitQuality.find((level) => level.level === localLevel + 1);
-              const qualityCost = nextQuality?.cost ? upgradeCostForPlayer(nextQuality.cost, player) : 0;
-              const canAffordQuality = qualityCost === 0 || player.supplies >= qualityCost;
+              const previewLevel = barracksPreviewLevel(isBarracksUpgradePreviewed, Boolean(nextBarracks), tile.base!.barracksLevel, unitTypeId, currentLevel);
               const qualityBonus = Math.max(0, currentLevel - 1);
               const qualityHealthBonus = qualityHealthBonusForUnit(unitTypeId, currentLevel);
+              const previewQualityBonus = Math.max(0, previewLevel - 1);
+              const previewQualityHealthBonus = qualityHealthBonusForUnit(unitTypeId, previewLevel);
               const requiredBarracksLevel =
                 UPGRADE_CONFIG.barracks.find((level) => level.unlocks.includes(unitTypeId))?.level ?? 1;
               const unlockSource = unlockSourceForBarracksLevel(tile, connectedBases, requiredBarracksLevel);
               const actionBadges = barracksActionBadges(unitTypeId, currentLevel);
-              const abilityDetails = barracksAbilityDetails(unitTypeId);
+              const abilityDetails = [{ title: 'Overview', description: unit.description }, ...barracksAbilityDetails(unitTypeId)];
               const recruitStats = [
-                { label: 'HP', value: unit.space + qualityHealthBonus, max: 24 },
-                { label: 'ATK', value: unit.attack + qualityBonus, max: 8 },
-                { label: 'DEF', value: unit.defense + qualityBonus, max: 8 },
-                { label: 'SPACE', value: unit.space, max: 20 },
+                { label: 'HP', value: unit.space + qualityHealthBonus, nextValue: unit.space + previewQualityHealthBonus, max: 24 },
+                { label: 'ATK', value: unit.attack + qualityBonus, nextValue: unit.attack + previewQualityBonus, max: 8 },
+                { label: 'DEF', value: unit.defense + qualityBonus, nextValue: unit.defense + previewQualityBonus, max: 8 },
               ];
               return (
-                <div className={['recruit-row', 'split-upgrade-row', !canAfford && !canAffordQuality ? 'unaffordable' : ''].join(' ')} key={unitTypeId}>
+                <div className={['recruit-row', 'split-upgrade-row', unlocked && (!canAfford || logisticsCapReached) ? 'unaffordable' : '', !unlocked ? 'locked-recruit-row' : ''].join(' ')} key={unitTypeId}>
                   <div className="recruit-unit-card">
-                    {abilityDetails.length > 0 && (
-                      <span className="ability-info-control" tabIndex={0} aria-label={`${unit.name} ability details`}>
-                        i
-                        <span className="ability-info-popover" role="tooltip">
-                          {abilityDetails.map((detail) => (
-                            <span key={detail.title}>
-                              <strong>{detail.title}</strong>
-                              {detail.description}
-                            </span>
-                          ))}
-                        </span>
+                    {!unlocked && <span className="recruit-lock-banner">Requires Barracks L{requiredBarracksLevel}</span>}
+                    <span className="ability-info-control" tabIndex={0} aria-label={`${unit.name} details`}>
+                      i
+                      <span className="ability-info-popover" role="tooltip">
+                        {abilityDetails.map((detail) => (
+                          <span key={detail.title}>
+                            <strong>{detail.title}</strong>
+                            {detail.description}
+                          </span>
+                        ))}
                       </span>
-                    )}
+                    </span>
                     <div className="recruit-details">
                       <div className="recruit-copy">
                         <strong>
                           {unit.name}
-                          <span className="unit-level-badge compact-level-badge" title={`Level ${currentLevel}`} aria-label={`Level ${currentLevel}`}>
+                          <span className={`unit-level-badge compact-level-badge unit-level-${Math.min(3, currentLevel)}`} title={`Level ${currentLevel}`} aria-label={`Level ${currentLevel}`}>
                             LVL {currentLevel}
                           </span>
                           {SOLO_ONLY_UNITS.has(unitTypeId) && (
@@ -196,77 +150,339 @@ export default function BaseModal({
                               <span className="note-tooltip">This squad must stay alone and cannot join a unit.</span>
                             </span>
                           )}
-                          {!unlocked && <span className="lock-note">Requires Barracks L{requiredBarracksLevel}</span>}
                           {unlocked && unlockSource && <span className="source-note">From base at {unlockSource.x}, {unlockSource.y}</span>}
+                          {logisticsCapReached && <span className="source-note">Max {MAX_LOGISTICS_UNITS} in play</span>}
                         </strong>
-                        <p>{unit.description}</p>
-                        {actionBadges.length > 0 && (
-                          <div className="recruit-ability-list" aria-label={`${unit.name} actions`}>
-                            {actionBadges.map((action) => (
-                              <span
-                                className={[
-                                  'ability-note',
-                                  'tooltip-note',
-                                  action.unlocked ? '' : 'locked-ability-note',
-                                ].join(' ')}
-                                key={action.label}
-                                tabIndex={0}
-                              >
-                                {action.label}
-                                <span className="note-tooltip">{action.tooltip}</span>
-                              </span>
-                            ))}
-                          </div>
-                        )}
                       </div>
+                      <span className="recruit-squad-preview" aria-hidden="true">
+                        <span className={`unit-art unit-art-${unitTypeId}`} />
+                      </span>
                       <div className="recruit-stat-bars" aria-label={`${unit.name} stats`}>
                         {recruitStats.map((stat) => (
                           <span className="recruit-stat-bar" key={stat.label}>
                             <span className="recruit-stat-label">{stat.label}</span>
                             <span className="recruit-stat-track">
+                              {stat.nextValue > stat.value && (
+                                <span
+                                  className="recruit-stat-growth"
+                                  style={
+                                    {
+                                      '--bar-left': `${Math.min(100, Math.round((stat.value / stat.max) * 100))}%`,
+                                      '--bar-width': `${Math.max(0, Math.min(100, Math.round((stat.nextValue / stat.max) * 100)) - Math.min(100, Math.round((stat.value / stat.max) * 100)))}%`,
+                                    } as CSSProperties
+                                  }
+                                />
+                              )}
                               <span
                                 className="recruit-stat-fill"
                                 style={{ '--bar-width': `${Math.min(100, Math.round((stat.value / stat.max) * 100))}%` } as CSSProperties}
                               />
                             </span>
-                            <strong>{stat.value}</strong>
+                            <strong>
+                              {stat.value}
+                              {stat.nextValue > stat.value && <em>+{stat.nextValue - stat.value}</em>}
+                            </strong>
                           </span>
                         ))}
                       </div>
+                      {actionBadges.length > 0 && (
+                        <div className="recruit-ability-list" aria-label={`${unit.name} actions`}>
+                          {actionBadges.map((action) => (
+                            <span
+                              className={[
+                                'quiet-card-description',
+                                'tooltip-note',
+                                action.unlocked ? '' : 'locked-ability-note',
+                              ].join(' ')}
+                              key={action.label}
+                              tabIndex={0}
+                            >
+                              {action.label}
+                              <span className="note-tooltip">{action.tooltip}</span>
+                            </span>
+                          ))}
+                        </div>
+                      )}
                     </div>
                     <div className="recruit-actions">
-                      <span className="recruit-squad-preview" aria-hidden="true">
-                        <span className={`unit-art unit-art-${unitTypeId}`} />
-                      </span>
                       <span>{cost}</span>
                       <button
-                        disabled={!isCurrentTurn || !unlocked || !canAfford || busyAction !== null}
+                        disabled={!isCurrentTurn || !unlocked || !canAfford || logisticsCapReached || busyAction !== null}
                         onClick={() => runAction(`recruit:${unitTypeId}`, () => onRecruit(unitTypeId))}
                       >
-                        {busyAction === `recruit:${unitTypeId}` ? <span className="button-spinner" aria-label="Recruiting" /> : unlocked ? 'Recruit' : 'Locked'}
+                        {busyAction === `recruit:${unitTypeId}` ? <span className="button-spinner" aria-label="Recruiting" /> : logisticsCapReached ? `Max ${MAX_LOGISTICS_UNITS}` : unlocked ? 'Recruit' : 'Locked'}
                       </button>
                     </div>
                   </div>
-                  {renderQualityUpgradeCard({
-                    unitName: unit.name,
-                    unitTypeId,
-                    baseHealth: unit.space,
-                    baseAttack: unit.attack,
-                    baseDefense: unit.defense,
-                    includeHealthGrowth: true,
-                    localLevel,
-                    nextQuality,
-                    qualityCost,
-                    canAffordQuality,
-                    unlocked,
-                    isCurrentTurn,
-                    busyAction,
-                    runAction,
-                    onUpgrade,
-                  })}
                 </div>
               );
             })}
+            <div className={['recruit-row', 'split-upgrade-row', 'base-upgrade-cell', 'base-defense-cell', nextDefense?.cost && player.supplies < upgradeCostForPlayer(nextDefense.cost, player) ? 'unaffordable' : ''].join(' ')}>
+              <div className="recruit-unit-card base-upgrade-card">
+                <div className="base-upgrade-card-copy">
+                  <strong>
+                    Base Defense
+                    <span className="unit-level-badge compact-level-badge unit-level-1">LVL {tile.base.defenseLevel}</span>
+                  </strong>
+                  <p>
+                    {nextDefense
+                      ? defenseRequiresBarracks
+                        ? `Requires Barracks L${nextDefense.level}.`
+                        : `Next defense bonus: ${nextDefense.bonus}.`
+                      : 'Maximum base defense reached.'}
+                  </p>
+                </div>
+                <span className="base-upgrade-preview" aria-hidden="true">
+                  <img src={baseArtForLevel(nextDefense?.level ?? tile.base.defenseLevel)} alt="" />
+                </span>
+                <div className="base-upgrade-card-stat">
+                  <span className="recruit-stat-bar">
+                    <span className="recruit-stat-label">DEF</span>
+                    <span className="recruit-stat-track">
+                      <span
+                        className="recruit-stat-growth"
+                        style={
+                          {
+                            '--bar-left': `${Math.min(100, ((UPGRADE_CONFIG.baseDefense.find((level) => level.level === tile.base!.defenseLevel)?.bonus ?? 0) / 28) * 100)}%`,
+                            '--bar-width': `${Math.max(0, Math.min(100, (((nextDefense?.bonus ?? (UPGRADE_CONFIG.baseDefense.find((level) => level.level === tile.base!.defenseLevel)?.bonus ?? 0)) / 28) * 100)) - Math.min(100, ((UPGRADE_CONFIG.baseDefense.find((level) => level.level === tile.base!.defenseLevel)?.bonus ?? 0) / 28) * 100))}%`,
+                          } as CSSProperties
+                        }
+                      />
+                      <span
+                        className="recruit-stat-fill"
+                        style={{ '--bar-width': `${Math.min(100, ((UPGRADE_CONFIG.baseDefense.find((level) => level.level === tile.base!.defenseLevel)?.bonus ?? 0) / 28) * 100)}%` } as CSSProperties}
+                      />
+                    </span>
+                    <strong>
+                      {UPGRADE_CONFIG.baseDefense.find((level) => level.level === tile.base!.defenseLevel)?.bonus ?? 0}
+                      {nextDefense && (
+                        <em>+{nextDefense.bonus - (UPGRADE_CONFIG.baseDefense.find((level) => level.level === tile.base!.defenseLevel)?.bonus ?? 0)}</em>
+                      )}
+                    </strong>
+                  </span>
+                </div>
+                <div className="recruit-actions">
+                  <span>{nextDefense?.cost ? upgradeCostForPlayer(nextDefense.cost, player) : '-'}</span>
+                  <button
+                    disabled={!isCurrentTurn || !nextDefense?.cost || defenseRequiresBarracks || player.supplies < upgradeCostForPlayer(nextDefense.cost, player) || busyAction !== null}
+                    onClick={() => runAction('defense', () => onUpgrade('defense'))}
+                  >
+                    {busyAction === 'defense' ? 'Upgrading...' : defenseRequiresBarracks ? `Barracks L${nextDefense?.level}` : nextDefense ? 'Upgrade' : 'Maxed'}
+                  </button>
+                </div>
+              </div>
+            </div>
+            <div className={['recruit-row', 'split-upgrade-row', 'base-upgrade-cell', 'base-attack-cell', nextOffense?.cost && player.supplies < upgradeCostForPlayer(nextOffense.cost, player) ? 'unaffordable' : ''].join(' ')}>
+              <div className="recruit-unit-card base-upgrade-card">
+                <div className="base-upgrade-card-copy">
+                  <strong>
+                    Base Attack
+                    <span className="unit-level-badge compact-level-badge unit-level-1">LVL {currentOffenseLevel}</span>
+                  </strong>
+                  <p>
+                    {nextOffense
+                      ? offenseRequiresBarracks
+                        ? `Requires Barracks L${nextOffense.level}.`
+                        : `Next sentry: range ${nextOffense.range}, ${nextOffense.damage * 10} damage.`
+                      : 'Maximum base sentry reached.'}
+                  </p>
+                </div>
+                <span className="base-upgrade-preview" aria-hidden="true">
+                  <img src={baseArtForLevel(nextOffense?.level ?? currentOffenseLevel)} alt="" />
+                </span>
+                <div className="base-upgrade-card-stat">
+                  <span className="recruit-stat-bar">
+                    <span className="recruit-stat-label">ATK</span>
+                    <span className="recruit-stat-track">
+                      <span
+                        className="recruit-stat-growth"
+                        style={
+                          {
+                            '--bar-left': `${Math.min(100, (((currentOffense?.damage ?? 0) * 10) / 20) * 100)}%`,
+                            '--bar-width': `${Math.max(0, Math.min(100, (((nextOffense?.damage ?? currentOffense?.damage ?? 0) * 10) / 20) * 100) - Math.min(100, (((currentOffense?.damage ?? 0) * 10) / 20) * 100))}%`,
+                          } as CSSProperties
+                        }
+                      />
+                      <span
+                        className="recruit-stat-fill"
+                        style={{ '--bar-width': `${Math.min(100, (((currentOffense?.damage ?? 0) * 10) / 20) * 100)}%` } as CSSProperties}
+                      />
+                    </span>
+                    <strong>
+                      {(currentOffense?.damage ?? 0) * 10}
+                      {nextOffense && <em>+{(nextOffense.damage - (currentOffense?.damage ?? 0)) * 10}</em>}
+                    </strong>
+                  </span>
+                </div>
+                <div className="recruit-actions">
+                  <span>{nextOffense?.cost ? upgradeCostForPlayer(nextOffense.cost, player) : '-'}</span>
+                  <button
+                    disabled={!isCurrentTurn || !nextOffense?.cost || offenseRequiresBarracks || player.supplies < upgradeCostForPlayer(nextOffense.cost, player) || busyAction !== null}
+                    onClick={() => runAction('offense', () => onUpgrade('offense'))}
+                  >
+                    {busyAction === 'offense' ? 'Upgrading...' : offenseRequiresBarracks ? `Barracks L${nextOffense?.level}` : nextOffense ? 'Upgrade' : 'Maxed'}
+                  </button>
+                </div>
+              </div>
+            </div>
+            {BARRACKS_RECRUIT_ORDER.slice(4).map((unitTypeId) => {
+              const unit = UNIT_TYPES[unitTypeId];
+              const cost = unitCostForPlayer(unit.cost, player);
+              const unlocked = unlockedUnits.has(unitTypeId);
+              const canAfford = player.supplies >= cost;
+              const logisticsCapReached = unitTypeId === 'builder' && logisticsInPlay >= MAX_LOGISTICS_UNITS;
+              const currentLevel = effectiveUnitQualityLevel(tile, unitTypeId, tiles, armies);
+              const previewLevel = barracksPreviewLevel(isBarracksUpgradePreviewed, Boolean(nextBarracks), tile.base!.barracksLevel, unitTypeId, currentLevel);
+              const qualityBonus = Math.max(0, currentLevel - 1);
+              const qualityHealthBonus = qualityHealthBonusForUnit(unitTypeId, currentLevel);
+              const previewQualityBonus = Math.max(0, previewLevel - 1);
+              const previewQualityHealthBonus = qualityHealthBonusForUnit(unitTypeId, previewLevel);
+              const requiredBarracksLevel =
+                UPGRADE_CONFIG.barracks.find((level) => level.unlocks.includes(unitTypeId))?.level ?? 1;
+              const unlockSource = unlockSourceForBarracksLevel(tile, connectedBases, requiredBarracksLevel);
+              const actionBadges = barracksActionBadges(unitTypeId, currentLevel);
+              const abilityDetails = [{ title: 'Overview', description: unit.description }, ...barracksAbilityDetails(unitTypeId)];
+              const recruitStats = [
+                { label: 'HP', value: unit.space + qualityHealthBonus, nextValue: unit.space + previewQualityHealthBonus, max: 24 },
+                { label: 'ATK', value: unit.attack + qualityBonus, nextValue: unit.attack + previewQualityBonus, max: 8 },
+                { label: 'DEF', value: unit.defense + qualityBonus, nextValue: unit.defense + previewQualityBonus, max: 8 },
+              ];
+              return (
+                <div className={['recruit-row', 'split-upgrade-row', unlocked && (!canAfford || logisticsCapReached) ? 'unaffordable' : '', !unlocked ? 'locked-recruit-row' : ''].join(' ')} key={unitTypeId}>
+                  <div className="recruit-unit-card">
+                    {!unlocked && <span className="recruit-lock-banner">Requires Barracks L{requiredBarracksLevel}</span>}
+                    <span className="ability-info-control" tabIndex={0} aria-label={`${unit.name} details`}>
+                      i
+                      <span className="ability-info-popover" role="tooltip">
+                        {abilityDetails.map((detail) => (
+                          <span key={detail.title}>
+                            <strong>{detail.title}</strong>
+                            {detail.description}
+                          </span>
+                        ))}
+                      </span>
+                    </span>
+                    <div className="recruit-details">
+                      <div className="recruit-copy">
+                        <strong>
+                          {unit.name}
+                          <span className={`unit-level-badge compact-level-badge unit-level-${Math.min(3, currentLevel)}`} title={`Level ${currentLevel}`} aria-label={`Level ${currentLevel}`}>
+                            LVL {currentLevel}
+                          </span>
+                          {SOLO_ONLY_UNITS.has(unitTypeId) && (
+                            <span className="solo-note tooltip-note" tabIndex={0}>
+                              Solo only
+                              <span className="note-tooltip">This squad must stay alone and cannot join a unit.</span>
+                            </span>
+                          )}
+                          {unlocked && unlockSource && <span className="source-note">From base at {unlockSource.x}, {unlockSource.y}</span>}
+                          {logisticsCapReached && <span className="source-note">Max {MAX_LOGISTICS_UNITS} in play</span>}
+                        </strong>
+                      </div>
+                      <span className="recruit-squad-preview" aria-hidden="true">
+                        <span className={`unit-art unit-art-${unitTypeId}`} />
+                      </span>
+                      <div className="recruit-stat-bars" aria-label={`${unit.name} stats`}>
+                        {recruitStats.map((stat) => (
+                          <span className="recruit-stat-bar" key={stat.label}>
+                            <span className="recruit-stat-label">{stat.label}</span>
+                            <span className="recruit-stat-track">
+                              {stat.nextValue > stat.value && (
+                                <span
+                                  className="recruit-stat-growth"
+                                  style={
+                                    {
+                                      '--bar-left': `${Math.min(100, Math.round((stat.value / stat.max) * 100))}%`,
+                                      '--bar-width': `${Math.max(0, Math.min(100, Math.round((stat.nextValue / stat.max) * 100)) - Math.min(100, Math.round((stat.value / stat.max) * 100)))}%`,
+                                    } as CSSProperties
+                                  }
+                                />
+                              )}
+                              <span
+                                className="recruit-stat-fill"
+                                style={{ '--bar-width': `${Math.min(100, Math.round((stat.value / stat.max) * 100))}%` } as CSSProperties}
+                              />
+                            </span>
+                            <strong>
+                              {stat.value}
+                              {stat.nextValue > stat.value && <em>+{stat.nextValue - stat.value}</em>}
+                            </strong>
+                          </span>
+                        ))}
+                      </div>
+                      {actionBadges.length > 0 && (
+                        <div className="recruit-ability-list" aria-label={`${unit.name} actions`}>
+                          {actionBadges.map((action) => (
+                            <span
+                              className={[
+                                'quiet-card-description',
+                                'tooltip-note',
+                                action.unlocked ? '' : 'locked-ability-note',
+                              ].join(' ')}
+                              key={action.label}
+                              tabIndex={0}
+                            >
+                              {action.label}
+                              <span className="note-tooltip">{action.tooltip}</span>
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    <div className="recruit-actions">
+                      <span>{cost}</span>
+                      <button
+                        disabled={!isCurrentTurn || !unlocked || !canAfford || logisticsCapReached || busyAction !== null}
+                        onClick={() => runAction(`recruit:${unitTypeId}`, () => onRecruit(unitTypeId))}
+                      >
+                        {busyAction === `recruit:${unitTypeId}` ? <span className="button-spinner" aria-label="Recruiting" /> : logisticsCapReached ? `Max ${MAX_LOGISTICS_UNITS}` : unlocked ? 'Recruit' : 'Locked'}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+            {ARTILLERY_SQUADS.map((squad) =>
+              renderArtilleryRecruitRow({
+                squad,
+                tile,
+                tiles,
+                armies,
+                player,
+                isCurrentTurn,
+                unlockedUnits,
+                connectedBases,
+                artilleryInPlay,
+                busyAction,
+                runAction,
+                onRecruit,
+              }),
+            )}
+            <div className="barracks-footer-upgrade">
+              <div className="barracks-footer-copy">
+                <strong>{nextBarracks ? `Upgrade Barracks to L${nextBarracks.level}` : 'Barracks Maxed'}</strong>
+                <span>
+                  {nextBarracks
+                    ? barracksUpgradeDescription(nextBarracks.level, nextBarracksUnlocks)
+                    : 'This base can recruit every current squad type.'}
+                  {sharedBarracksLevel > tile.base.barracksLevel ? ` Connected trenches share Barracks L${sharedBarracksLevel} here.` : ''}
+                  {supplyLineBonus > 0 ? ` Supply line bonus: +${supplyLineBonus} supplies per turn.` : ''}
+                </span>
+              </div>
+              <div className="recruit-actions">
+                <span>{nextBarracks?.cost ? nextBarracksCost : '-'}</span>
+                <button
+                  disabled={!isCurrentTurn || !nextBarracks?.cost || player.supplies < nextBarracksCost || busyAction !== null}
+                  onMouseEnter={() => setIsBarracksUpgradePreviewed(true)}
+                  onMouseLeave={() => setIsBarracksUpgradePreviewed(false)}
+                  onFocus={() => setIsBarracksUpgradePreviewed(true)}
+                  onBlur={() => setIsBarracksUpgradePreviewed(false)}
+                  onClick={() => runAction('barracks', () => onUpgrade('barracks'))}
+                >
+                  {busyAction === 'barracks' ? 'Upgrading...' : nextBarracks ? 'Upgrade Barracks' : 'Maxed'}
+                </button>
+              </div>
+            </div>
           </div>
         )}
 
@@ -363,49 +579,6 @@ export default function BaseModal({
           </div>
         )}
 
-        {!hideQualityTab && activeTab === 'quality' && (
-          <div className="recruit-list">
-            {UNIT_ORDER.map((unitTypeId) => {
-              const unit = UNIT_TYPES[unitTypeId];
-              const unlocked = unlockedUnits.has(unitTypeId);
-              const sharedLevel = effectiveUnitQualityLevel(tile, unitTypeId, tiles, armies);
-              const localLevel = tile.base!.unitQualityByType?.[unitTypeId] ?? tile.base!.unitQualityLevel ?? 1;
-              const nextQuality = UPGRADE_CONFIG.unitQuality.find((level) => level.level === localLevel + 1);
-              const qualityCost = nextQuality?.cost ? upgradeCostForPlayer(nextQuality.cost, player) : 0;
-              const canAfford = qualityCost === 0 || player.supplies >= qualityCost;
-              const requiredBarracksLevel =
-                UPGRADE_CONFIG.barracks.find((level) => level.unlocks.includes(unitTypeId))?.level ?? 1;
-              const abilityUnlock = logisticsQualityUnlock(unitTypeId, localLevel + 1);
-              return (
-                <div className={['recruit-row', !canAfford ? 'unaffordable' : ''].join(' ')} key={unitTypeId}>
-                  <div>
-                    <strong>
-                      {unit.name} Quality L{localLevel}
-                      {sharedLevel > localLevel && <span className="lock-note">Using shared L{sharedLevel}</span>}
-                      {!unlocked && <span className="lock-note">Requires Barracks L{requiredBarracksLevel}</span>}
-                    </strong>
-                    <p>
-                      {nextQuality
-                        ? `New ${unit.name} squads gain +${nextQuality.bonus} attack and defense.`
-                        : `${unit.name} quality is maxed for this base.`}
-                      {abilityUnlock ? ` ${abilityUnlock}` : ''}
-                    </p>
-                  </div>
-                  <div className="recruit-actions">
-                    <span>{nextQuality?.cost ? qualityCost : '-'}</span>
-                    <button
-                      disabled={!isCurrentTurn || !unlocked || !nextQuality?.cost || !canAfford || busyAction !== null}
-                      onClick={() => runAction(`quality:${unitTypeId}`, () => onUpgrade(`quality:${unitTypeId}`))}
-                    >
-                      {busyAction === `quality:${unitTypeId}` ? 'Upgrading...' : nextQuality ? 'Upgrade' : 'Maxed'}
-                    </button>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-
         {activeTab === 'defense' && (
           <div className="recruit-list">
             <div
@@ -465,55 +638,6 @@ export default function BaseModal({
           </div>
         )}
 
-        {activeTab === 'artillery' && (
-          <div className="recruit-list">
-            <div
-              className={[
-                'recruit-row',
-                'upgrade-row',
-                'barracks-upgrade-row',
-                nextBarracks?.cost && player.supplies < nextBarracksCost ? 'unaffordable' : '',
-              ].join(' ')}
-            >
-              <div>
-                <strong>{nextBarracks ? `Upgrade Barracks to L${nextBarracks.level}` : 'Barracks Maxed'}</strong>
-                <p>
-                  {nextBarracks
-                    ? barracksUpgradeDescription(nextBarracks.level, nextBarracksUnlocks)
-                    : 'This base can recruit every artillery squad type.'}
-                  {sharedBarracksLevel > tile.base.barracksLevel
-                    ? ` Connected trenches share Barracks L${sharedBarracksLevel} here.`
-                    : ''}
-                </p>
-              </div>
-              <div className="recruit-actions">
-                <span>{nextBarracks?.cost ? nextBarracksCost : '-'}</span>
-                <button
-                  disabled={!isCurrentTurn || !nextBarracks?.cost || player.supplies < nextBarracksCost || busyAction !== null}
-                  onClick={() => runAction('barracks', () => onUpgrade('barracks'))}
-                >
-                  {busyAction === 'barracks' ? 'Upgrading...' : nextBarracks ? 'Upgrade' : 'Maxed'}
-                </button>
-              </div>
-            </div>
-            {ARTILLERY_SQUADS.map((squad) =>
-              renderArtilleryRecruitRow({
-                squad,
-                tile,
-                tiles,
-                armies,
-                player,
-                isCurrentTurn,
-                unlockedUnits,
-                connectedBases,
-                busyAction,
-                runAction,
-                onRecruit,
-                onUpgrade,
-              }),
-            )}
-          </div>
-        )}
       </section>
     </div>
   );
@@ -534,6 +658,24 @@ function unlockSourceForBarracksLevel(currentBaseTile: TileDoc, connectedBases: 
   );
 }
 
+function baseArtForLevel(level: number) {
+  if (level <= 1) return '/sprites/base-default.png';
+  return `/sprites/base_lvl${Math.min(5, level)}.png`;
+}
+
+function barracksPreviewLevel(isPreviewed: boolean, hasNextBarracks: boolean, barracksLevel: number, unitTypeId: UnitTypeId, currentLevel: number) {
+  if (!isPreviewed || !hasNextBarracks || currentLevel >= 3) return currentLevel;
+  if (!isUnitUnlockedAtBarracksLevel(unitTypeId, barracksLevel)) return currentLevel;
+  return Math.min(3, currentLevel + 1);
+}
+
+function isUnitUnlockedAtBarracksLevel(unitTypeId: UnitTypeId, barracksLevel: number) {
+  return UPGRADE_CONFIG.barracks
+    .filter((level) => level.level <= barracksLevel)
+    .flatMap((level) => level.unlocks as UnitTypeId[])
+    .includes(unitTypeId);
+}
+
 function renderArtilleryRecruitRow({
   squad,
   tile,
@@ -543,10 +685,10 @@ function renderArtilleryRecruitRow({
   isCurrentTurn,
   unlockedUnits,
   connectedBases,
+  artilleryInPlay,
   busyAction,
   runAction,
   onRecruit,
-  onUpgrade,
 }: {
   squad: (typeof ARTILLERY_SQUADS)[number];
   tile: TileDoc;
@@ -556,21 +698,18 @@ function renderArtilleryRecruitRow({
   isCurrentTurn: boolean;
   unlockedUnits: Set<UnitTypeId>;
   connectedBases: TileDoc[];
+  artilleryInPlay: number;
   busyAction: string | null;
   runAction: (actionId: string, action: () => Promise<void>) => Promise<void>;
   onRecruit: (unitTypeId: UnitTypeId) => Promise<void>;
-  onUpgrade: (action: BaseUpgradeAction) => Promise<void>;
 }) {
   const unitTypeId = squad.unitTypeId;
   const unit = UNIT_TYPES[unitTypeId];
   const cost = unitCostForPlayer(unit.cost, player);
   const unlocked = unlockedUnits.has(unitTypeId);
   const canAfford = player.supplies >= cost;
+  const artilleryCapReached = artilleryInPlay >= MAX_ARTILLERY_UNITS;
   const currentLevel = effectiveUnitQualityLevel(tile, unitTypeId, tiles, armies);
-  const localLevel = tile.base!.unitQualityByType?.[unitTypeId] ?? tile.base!.unitQualityLevel ?? 1;
-  const nextQuality = UPGRADE_CONFIG.unitQuality.find((level) => level.level === localLevel + 1);
-  const qualityCost = nextQuality?.cost ? upgradeCostForPlayer(nextQuality.cost, player) : 0;
-  const canAffordQuality = qualityCost === 0 || player.supplies >= qualityCost;
   const qualityBonus = Math.max(0, currentLevel - 1);
   const requiredBarracksLevel = UPGRADE_CONFIG.barracks.find((level) => level.unlocks.includes(unitTypeId))?.level ?? ARTILLERY_UNLOCK_BARRACKS_LEVEL;
   const unlockSource = unlockSourceForBarracksLevel(tile, connectedBases, requiredBarracksLevel);
@@ -578,17 +717,32 @@ function renderArtilleryRecruitRow({
     { label: 'HP', value: unit.space, max: 20 },
     { label: 'ATK', value: unit.attack + qualityBonus, max: 8 },
     { label: 'DEF', value: unit.defense + qualityBonus, max: 8 },
-    { label: 'SPACE', value: unit.space, max: 20 },
+  ];
+  const abilityDetails = [
+    { title: 'Overview', description: squad.description },
+    { title: squad.ability, description: 'Special artillery role for this squad.' },
   ];
 
   return (
-    <div className={['recruit-row', 'artillery-recruit-row', 'split-upgrade-row', !canAfford && !canAffordQuality ? 'unaffordable' : ''].join(' ')} key={squad.id}>
+    <div className={['recruit-row', 'artillery-recruit-row', 'split-upgrade-row', unlocked && (!canAfford || artilleryCapReached) ? 'unaffordable' : '', !unlocked ? 'locked-recruit-row' : ''].join(' ')} key={squad.id}>
       <div className="recruit-unit-card">
+        {!unlocked && <span className="recruit-lock-banner">Requires Barracks L{requiredBarracksLevel}</span>}
+        <span className="ability-info-control" tabIndex={0} aria-label={`${unit.name} details`}>
+          i
+          <span className="ability-info-popover" role="tooltip">
+            {abilityDetails.map((detail) => (
+              <span key={detail.title}>
+                <strong>{detail.title}</strong>
+                {detail.description}
+              </span>
+            ))}
+          </span>
+        </span>
         <div className="recruit-details">
           <div className="recruit-copy">
             <strong>
               {unit.name}
-              <span className="unit-level-badge compact-level-badge" title={`Level ${currentLevel}`} aria-label={`Level ${currentLevel}`}>
+              <span className={`unit-level-badge compact-level-badge unit-level-${Math.min(3, currentLevel)}`} title={`Level ${currentLevel}`} aria-label={`Level ${currentLevel}`}>
                 LVL {currentLevel}
               </span>
               <span className="solo-note tooltip-note" tabIndex={0}>
@@ -596,14 +750,13 @@ function renderArtilleryRecruitRow({
                 <span className="note-tooltip">This squad must stay alone and cannot join a unit.</span>
               </span>
               <span className="ability-note">Range 6</span>
-              {!unlocked && <span className="lock-note">Requires Barracks L{requiredBarracksLevel}</span>}
               {unlocked && unlockSource && <span className="source-note">From base at {unlockSource.x}, {unlockSource.y}</span>}
+              {artilleryCapReached && <span className="source-note">Max {MAX_ARTILLERY_UNITS} in play</span>}
             </strong>
-            <p>{squad.description}</p>
-            <div className="artillery-buff-list">
-              <span className="ability-note">{squad.ability}</span>
-            </div>
           </div>
+          <span className="recruit-squad-preview" aria-hidden="true">
+            <span className={`unit-art unit-art-${unitTypeId}`} />
+          </span>
           <div className="recruit-stat-bars" aria-label={`${unit.name} stats`}>
             {recruitStats.map((stat) => (
               <span className="recruit-stat-bar" key={stat.label}>
@@ -618,37 +771,20 @@ function renderArtilleryRecruitRow({
               </span>
             ))}
           </div>
+          <div className="artillery-buff-list">
+            <span className="quiet-card-description">{squad.ability}</span>
+          </div>
         </div>
         <div className="recruit-actions">
-          <span className="recruit-squad-preview" aria-hidden="true">
-            <span className={`unit-art unit-art-${unitTypeId}`} />
-          </span>
           <span>{cost}</span>
           <button
-            disabled={!isCurrentTurn || !unlocked || !canAfford || busyAction !== null}
+            disabled={!isCurrentTurn || !unlocked || !canAfford || artilleryCapReached || busyAction !== null}
             onClick={() => runAction(`recruit:${unitTypeId}`, () => onRecruit(unitTypeId))}
           >
-            {busyAction === `recruit:${unitTypeId}` ? <span className="button-spinner" aria-label="Recruiting" /> : unlocked ? 'Recruit' : 'Locked'}
+            {busyAction === `recruit:${unitTypeId}` ? <span className="button-spinner" aria-label="Recruiting" /> : artilleryCapReached ? `Max ${MAX_ARTILLERY_UNITS}` : unlocked ? 'Recruit' : 'Locked'}
           </button>
         </div>
       </div>
-      {renderQualityUpgradeCard({
-        unitName: unit.name,
-        unitTypeId,
-        baseHealth: unit.space,
-        baseAttack: unit.attack,
-        baseDefense: unit.defense,
-        includeHealthGrowth: false,
-        localLevel,
-        nextQuality,
-        qualityCost,
-        canAffordQuality,
-        unlocked,
-        isCurrentTurn,
-        busyAction,
-        runAction,
-        onUpgrade,
-      })}
     </div>
   );
 }

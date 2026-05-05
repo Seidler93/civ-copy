@@ -2,6 +2,7 @@ import { type CSSProperties, useEffect, useRef, useState } from 'react';
 import { UNIT_TYPES } from '../../data/unitTypes';
 import { devAddSupplies } from '../../firebase/gameService';
 import type { GameState, UnitTypeId } from '../../types/gameTypes';
+import { xpForNextLevel } from '../../utils/xp';
 import type { MovementSoundMode, OwnerTileColorMode } from '../../App';
 import GameSettings from '../GameSettings/GameSettings';
 import MusicPlayer from '../MusicPlayer/MusicPlayer';
@@ -87,7 +88,9 @@ export default function HeaderBar({
     gameState?.players
       .slice()
       .sort((a, b) => {
-        if (b.xp !== a.xp) return b.xp - a.xp;
+        const aTotalXp = totalCommanderXp(a.level, a.xp);
+        const bTotalXp = totalCommanderXp(b.level, b.xp);
+        if (bTotalXp !== aTotalXp) return bTotalXp - aTotalXp;
         const aStats = a.stats;
         const bStats = b.stats;
         return (bStats?.enemiesKilled ?? 0) - (aStats?.enemiesKilled ?? 0);
@@ -124,6 +127,14 @@ export default function HeaderBar({
 
   function dispatchMusicCommand(command: 'toggle' | 'skip') {
     window.dispatchEvent(new Event(command === 'toggle' ? 'grid-warfare:toggle-music' : 'grid-warfare:skip-music'));
+  }
+
+  function totalCommanderXp(level: number, currentLevelXp: number) {
+    let total = currentLevelXp;
+    for (let previousLevel = 1; previousLevel < level; previousLevel += 1) {
+      total += xpForNextLevel(previousLevel);
+    }
+    return total;
   }
 
   return (
@@ -279,11 +290,14 @@ export default function HeaderBar({
                     </div>
                     <div className={`settings-option ownership-display-card ${unitTileOwnerTintEnabled ? '' : 'setting-disabled'}`}>
                       <label className="checkbox-setting ownership-display-toggle">
-                        <input
-                          type="checkbox"
-                          checked={unitTileOwnerTintEnabled}
-                          onChange={(event) => onUnitTileOwnerTintChange(event.target.checked)}
-                        />
+                        <span className="slide-toggle">
+                          <input
+                            type="checkbox"
+                            checked={unitTileOwnerTintEnabled}
+                            onChange={(event) => onUnitTileOwnerTintChange(event.target.checked)}
+                          />
+                          <span className="slide-toggle-track" aria-hidden="true" />
+                        </span>
                         <span className="settings-option-copy">
                           <strong>Tint occupied tiles</strong>
                           <em>
@@ -373,22 +387,43 @@ export default function HeaderBar({
                       </div>
                     </div>
                     <label className="checkbox-setting settings-option">
-                      <input
-                        type="checkbox"
-                        checked={unitOwnerBarEnabled}
-                        onChange={(event) => onUnitOwnerBarChange(event.target.checked)}
-                      />
+                      <span className="slide-toggle">
+                        <input
+                          type="checkbox"
+                          checked={unitOwnerBarEnabled}
+                          onChange={(event) => onUnitOwnerBarChange(event.target.checked)}
+                        />
+                        <span className="slide-toggle-track" aria-hidden="true" />
+                      </span>
                       <span className="settings-option-copy">
                         <strong>Show owner color bar</strong>
                         <em>Displays a small color strip at the bottom of occupied tiles for a compact ownership cue.</em>
                       </span>
+                      <span className="owner-bar-preview-panel" aria-label="Owner color bar preview">
+                        <span className="owner-bar-preview-item">
+                          <span className="owner-bar-preview-tile">
+                            <span className="owner-bar-preview-rifleman" />
+                          </span>
+                          <span>Off</span>
+                        </span>
+                        <span className="owner-bar-preview-item">
+                          <span className="owner-bar-preview-tile">
+                            <span className="owner-bar-preview-strip" />
+                            <span className="owner-bar-preview-rifleman" />
+                          </span>
+                          <span>On</span>
+                        </span>
+                      </span>
                     </label>
                     <label className="checkbox-setting settings-option">
-                      <input
-                        type="checkbox"
-                        checked={attackRadiusVisible}
-                        onChange={(event) => onAttackRadiusVisibleChange(event.target.checked)}
-                      />
+                      <span className="slide-toggle">
+                        <input
+                          type="checkbox"
+                          checked={attackRadiusVisible}
+                          onChange={(event) => onAttackRadiusVisibleChange(event.target.checked)}
+                        />
+                        <span className="slide-toggle-track" aria-hidden="true" />
+                      </span>
                       <span className="settings-option-copy">
                         <strong>Show attack radius</strong>
                         <em>Shows red range tiles for the selected unit. Attackable enemies still get a red border even when this is hidden.</em>
@@ -403,11 +438,14 @@ export default function HeaderBar({
                       <p>These options simplify panels when you want faster decisions and less detail on screen.</p>
                     </div>
                     <label className="checkbox-setting settings-option">
-                      <input
-                        type="checkbox"
-                        checked={qualityTabHidden}
-                        onChange={(event) => onQualityTabHiddenChange(event.target.checked)}
-                      />
+                      <span className="slide-toggle">
+                        <input
+                          type="checkbox"
+                          checked={qualityTabHidden}
+                          onChange={(event) => onQualityTabHiddenChange(event.target.checked)}
+                        />
+                        <span className="slide-toggle-track" aria-hidden="true" />
+                      </span>
                       <span className="settings-option-copy">
                         <strong>Hide Quality tab</strong>
                         <em>Removes the separate Quality tab from base management. Squad quality upgrades still appear next to recruit cards.</em>
@@ -422,7 +460,12 @@ export default function HeaderBar({
                         <h3>Game Controls</h3>
                         <p>Use these for the current match. Host-only controls affect every player; player controls affect only you.</p>
                       </div>
-                      <GameSettings game={gameState.game} currentPlayerId={currentPlayerId} onMessage={setSettingsMessage} />
+                      <GameSettings
+                        game={gameState.game}
+                        players={gameState.players}
+                        currentPlayerId={currentPlayerId}
+                        onMessage={setSettingsMessage}
+                      />
                       {settingsMessage && <p className="settings-message">{settingsMessage}</p>}
                     </section>
                   )}
@@ -485,7 +528,7 @@ export default function HeaderBar({
                           {player.id === currentPlayerId ? ' (You)' : ''}
                         </span>
                       </td>
-                      <td>{player.xp}</td>
+                      <td>{totalCommanderXp(player.level, player.xp)}</td>
                       <td>{player.stats?.enemiesKilled ?? 0}</td>
                       <td>{player.stats?.basesBuilt ?? 0}</td>
                       <td>{player.stats?.basesCaptured ?? 0}</td>

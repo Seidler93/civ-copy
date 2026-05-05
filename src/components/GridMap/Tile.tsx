@@ -132,6 +132,7 @@ export default function Tile({
   onBaseClick,
 }: TileProps) {
   const showContents = !isFogged;
+  const hasOwnershipTintTarget = Boolean(showContents && unitTileOwnerTintEnabled && (army || (tile.base && !tile.base.ruined)));
   const baseDefense = showContents && tile.base
     ? UPGRADE_CONFIG.baseDefense.find((level) => level.level === tile.base!.defenseLevel)?.bonus ?? 0
     : 0;
@@ -219,11 +220,13 @@ export default function Tile({
         dirtRotationClass,
         waterVariantClass,
         waterRotationClass,
+        army ? 'has-army' : '',
+        showActionTray && actionButtons.length > 0 ? 'has-action-tray' : '',
         isFogged ? 'fogged' : '',
         isExploredButNotVisible ? 'scouted' : '',
         army && actionRemaining ? 'action-ready' : '',
-        army && unitTileOwnerTintEnabled ? 'owner-tinted' : '',
-        army && unitTileOwnerTintEnabled && unitTileOwnerColorMode === 'solid' ? 'owner-solid' : '',
+        hasOwnershipTintTarget ? 'owner-tinted' : '',
+        hasOwnershipTintTarget && unitTileOwnerColorMode === 'solid' ? 'owner-solid' : '',
         army && hasBaseDefenseBuff ? 'base-defense-buffed-army' : '',
         isSelected ? 'selected' : '',
         isReachable ? 'reachable' : '',
@@ -262,7 +265,7 @@ export default function Tile({
               ? 'rgba(146, 149, 156, 0.88)'
               : owner?.color ?? 'rgba(255,255,255,0.16)'
             : 'rgba(255,255,255,0.16)',
-        '--unit-owner-color': armyOwner?.color ?? 'transparent',
+        '--unit-owner-color': armyOwner?.color ?? (tile.base ? owner?.color : null) ?? 'transparent',
         '--mine-owner-color': mineOwner?.color ?? '#f0c95d',
         '--sentry-coverage-color': sentryCoverageColor ?? 'transparent',
         '--unit-owner-tint': `${unitTileOwnerTintIntensity}%`,
@@ -270,7 +273,7 @@ export default function Tile({
       } as CSSProperties}
     >
       {showContents && sentryCoverageColor && <span className="sentry-coverage" aria-hidden="true" />}
-      {showContents && army && unitTileOwnerTintEnabled && unitTileOwnerColorMode === 'overlay' && (
+      {hasOwnershipTintTarget && unitTileOwnerColorMode === 'overlay' && (
         <span className="unit-owner-tint" aria-hidden="true" />
       )}
       {showContents && isSelected && <span className="tile-highlight selected-highlight" aria-hidden="true" />}

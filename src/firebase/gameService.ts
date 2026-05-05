@@ -18,7 +18,7 @@ import { signInAnonymously, type User } from 'firebase/auth';
 import { auth, db } from './firebaseConfig';
 import { UNIT_TYPES } from '../data/unitTypes';
 import { UNIT_COMPOSITIONS } from '../data/unitCompositions';
-import { BUILD_BASE_COST, BUILD_TRENCH_COST, UPGRADE_CONFIG } from '../data/upgradeConfig';
+import { BUILD_BASE_COST, BUILD_TRENCH_COST, MAX_ARTILLERY_UNITS, MAX_LOGISTICS_UNITS, UPGRADE_CONFIG } from '../data/upgradeConfig';
 import { previousTalentInBranch, talentById } from '../data/talentConfig';
 import type {
   ArmyDoc,
@@ -183,9 +183,9 @@ export async function ensureAnonymousUser() {
   return credential.user;
 }
 
-export async function createGame(playerName: string, setup: GameSetupOptions = DEFAULT_GAME_SETUP) {
+export async function createGame(playerName: string, setup: GameSetupOptions = DEFAULT_GAME_SETUP, requestedCode = '') {
   const user = await ensureAnonymousUser();
-  const code = makeGameCode();
+  const code = await makeUniqueGameCode(requestedCode);
   const normalizedSetup = normalizeGameSetup(setup);
   const gameRef = await addDoc(collection(db, 'games'), {
     code,
@@ -381,6 +381,17 @@ export async function devAddSupplies(gameId: string, playerId: string, amount: n
 
 export async function devSpawnUnitAtTile(gameId: string, playerId: string, unitTypeId: UnitTypeId, tileId: string) {
   if (!import.meta.env.DEV) throw new Error('Dev tools are only available in local development.');
+  if (unitTypeId === 'recon' || unitTypeId === 'medic') throw new Error(`${UNIT_TYPES[unitTypeId].name} is currently disabled.`);
+  if (unitTypeId === 'builder' || ARTILLERY_UNIT_TYPES.has(unitTypeId)) {
+    const playerArmiesSnapshot = await getDocs(query(collection(db, 'games', gameId, 'armies'), where('ownerId', '==', playerId)));
+    const playerArmies = playerArmiesSnapshot.docs.map((armyDoc) => ({ id: armyDoc.id, ...armyDoc.data() }) as ArmyDoc);
+    if (unitTypeId === 'builder' && deployedUnitTypeCount(playerArmies, playerId, 'builder') >= MAX_LOGISTICS_UNITS) {
+      throw new Error(`You can only have ${MAX_LOGISTICS_UNITS} Logistics squads in play.`);
+    }
+    if (ARTILLERY_UNIT_TYPES.has(unitTypeId) && deployedArtilleryCount(playerArmies, playerId) >= MAX_ARTILLERY_UNITS) {
+      throw new Error(`You can only have ${MAX_ARTILLERY_UNITS} artillery squads in play.`);
+    }
+  }
   return runTransaction(db, async (transaction) => {
     const tileRef = doc(db, 'games', gameId, 'tiles', tileId);
     const playerRef = doc(db, 'games', gameId, 'players', playerId);
@@ -713,6 +724,16 @@ export async function setGamePaused(gameId: string, playerId: string, isPaused: 
 }
 
 export async function backOutOfGame(gameId: string, playerId: string) {
+  await removePlayerFromGame(gameId, playerId);
+  return 'You backed out of the game. Your armies, bases, and mines were removed.';
+}
+
+export async function kickPlayerFromGame(gameId: string, hostPlayerId: string, targetPlayerId: string) {
+  const targetPlayerName = await removePlayerFromGame(gameId, targetPlayerId, hostPlayerId);
+  return `${targetPlayerName} was kicked. Their units, bases, and mines were removed.`;
+}
+
+async function removePlayerFromGame(gameId: string, playerId: string, hostPlayerId?: string) {
   const gameRef = doc(db, 'games', gameId);
   const [gameSnapshot, playersSnapshot, tilesSnapshot, armiesSnapshot] = await Promise.all([
     getDoc(gameRef),
@@ -728,6 +749,11 @@ export async function backOutOfGame(gameId: string, playerId: string) {
   const armiesById = new Map(armies.map((army) => [army.id, army]));
   const leavingPlayer = players.find((player) => player.id === playerId);
   if (!leavingPlayer) throw new Error('You are not in this game.');
+  if (hostPlayerId) {
+    if (game.hostPlayerId !== hostPlayerId) throw new Error('Only the host can kick players.');
+    if (playerId === game.hostPlayerId) throw new Error('The host cannot be kicked.');
+    if (leavingPlayer.isEliminated) throw new Error('That player is already out of the game.');
+  }
 
   const batch = writeBatch(db);
   armiesSnapshot.docs.forEach((armyDoc) => {
@@ -782,7 +808,7 @@ export async function backOutOfGame(gameId: string, playerId: string) {
   }
 
   await batch.commit();
-  return 'You backed out of the game. Your armies, bases, and mines were removed.';
+  return leavingPlayer.name;
 }
 
 export async function moveArmy(gameId: string, armyId: string, targetTileId: string, playerId: string): Promise<MoveOutcome> {
@@ -1453,6 +1479,7 @@ export async function attackTile(gameId: string, attackerArmyId: string, targetT
 
 export async function recruitUnitAtBase(gameId: string, baseTileId: string, unitTypeId: UnitTypeId, playerId: string) {
   return runTransaction(db, async (transaction) => {
+    if (unitTypeId === 'recon' || unitTypeId === 'medic') throw new Error(`${UNIT_TYPES[unitTypeId].name} is currently disabled.`);
     const gameRef = doc(db, 'games', gameId);
     const baseTileRef = doc(db, 'games', gameId, 'tiles', baseTileId);
     const playerRef = doc(db, 'games', gameId, 'players', playerId);
@@ -1491,6 +1518,12 @@ export async function recruitUnitAtBase(gameId: string, baseTileId: string, unit
     }, 0);
     if (deployedUnitCount >= MAX_DEPLOYED_UNITS) {
       throw new Error(`You already have the maximum ${MAX_DEPLOYED_UNITS} squads deployed.`);
+    }
+    if (unitTypeId === 'builder' && deployedUnitTypeCount(allArmies, playerId, 'builder') >= MAX_LOGISTICS_UNITS) {
+      throw new Error(`You can only have ${MAX_LOGISTICS_UNITS} Logistics squads in play.`);
+    }
+    if (ARTILLERY_UNIT_TYPES.has(unitTypeId) && deployedArtilleryCount(allArmies, playerId) >= MAX_ARTILLERY_UNITS) {
+      throw new Error(`You can only have ${MAX_ARTILLERY_UNITS} artillery squads in play.`);
     }
 
     const neighborTiles = await Promise.all(
@@ -1538,7 +1571,7 @@ export async function recruitUnitAtBase(gameId: string, baseTileId: string, unit
         queuedMoveMode: null,
       });
       transaction.update(finalSpawnTarget.ref, { armyId: armyRef.id });
-    } else if (unitTypeId === 'builder' || unitTypeId === 'recon' || ARTILLERY_UNIT_TYPES.has(unitTypeId)) {
+    } else if (unitTypeId === 'builder' || ARTILLERY_UNIT_TYPES.has(unitTypeId)) {
       throw new Error('No space to deploy.');
     } else {
       const adjacentArmyEntries = await Promise.all(
@@ -1611,6 +1644,9 @@ export async function recruitUnitCompositionAtBase(
     if (!canPlayerActInGame(game, playerId)) throw new Error(actionUnavailableMessage(game, 'You can only recruit during your turn.'));
     if (!baseTile.base || baseTile.base.ownerId !== playerId) throw new Error('You do not control that base.');
 
+    const disabledUnit = composition.units.find((unitTypeId) => unitTypeId === 'recon' || unitTypeId === 'medic');
+    if (disabledUnit) throw new Error(`${UNIT_TYPES[disabledUnit].name} is currently disabled.`);
+
     const lockedUnit = composition.units.find((unitTypeId) => !isUnitUnlocked(unitTypeId, sharedBarracksLevel));
     if (lockedUnit) throw new Error(`${UNIT_TYPES[lockedUnit].name} is not unlocked here.`);
 
@@ -1628,6 +1664,13 @@ export async function recruitUnitCompositionAtBase(
       .reduce((total, army) => total + army.units.length, 0);
     if (deployedUnitCount + composition.units.length > MAX_DEPLOYED_UNITS) {
       throw new Error(`You can only have ${MAX_DEPLOYED_UNITS} squads deployed.`);
+    }
+    const compositionLogisticsCount = composition.units.filter((unitTypeId) => unitTypeId === 'builder').length;
+    if (
+      compositionLogisticsCount > 0 &&
+      deployedUnitTypeCount(allArmies, playerId, 'builder') + compositionLogisticsCount > MAX_LOGISTICS_UNITS
+    ) {
+      throw new Error(`You can only have ${MAX_LOGISTICS_UNITS} Logistics squads in play.`);
     }
 
     const neighborTiles = await Promise.all(
@@ -2825,6 +2868,32 @@ async function createPlayer(gameId: string, user: User, playerName: string, colo
   });
 }
 
+function normalizeRequestedGameCode(code: string) {
+  return code.trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+}
+
+async function gameCodeExists(code: string) {
+  const existingGameQuery = query(collection(db, 'games'), where('code', '==', code), limit(1));
+  const existingGameSnapshot = await getDocs(existingGameQuery);
+  return !existingGameSnapshot.empty;
+}
+
+async function makeUniqueGameCode(requestedCode: string) {
+  const customCode = normalizeRequestedGameCode(requestedCode);
+  if (customCode) {
+    if (customCode.length < 4) throw new Error('Game code must be at least 4 characters.');
+    if (customCode.length > 12) throw new Error('Game code must be 12 characters or fewer.');
+    if (await gameCodeExists(customCode)) throw new Error('That game code is already taken.');
+    return customCode;
+  }
+
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const code = makeGameCode();
+    if (!(await gameCodeExists(code))) return code;
+  }
+  throw new Error('Could not create a unique game code. Try again.');
+}
+
 function makeGameCode() {
   return Math.random().toString(36).slice(2, 8).toUpperCase();
 }
@@ -3012,13 +3081,22 @@ async function upgradeBase(
       const nextConfig = UPGRADE_CONFIG.barracks.find((level) => level.level === currentBase.barracksLevel + 1);
       if (!nextConfig?.cost) throw new Error('Barracks are already at max level.');
       cost = upgradeCostForPlayer(nextConfig.cost, player);
+      const maxQualityLevel = Math.max(...UPGRADE_CONFIG.unitQuality.map((level) => level.level));
+      const alreadyUnlockedUnitTypes = UPGRADE_CONFIG.barracks
+        .filter((level) => level.level <= currentBase.barracksLevel)
+        .flatMap((level) => level.unlocks as UnitTypeId[]);
+      alreadyUnlockedUnitTypes.forEach((unlockedUnitTypeId) => {
+        const currentQuality = currentBase.unitQualityByType?.[unlockedUnitTypeId] ?? currentBase.unitQualityLevel ?? 1;
+        nextBase.unitQualityByType![unlockedUnitTypeId] = Math.min(maxQualityLevel, currentQuality + 1);
+      });
       nextBase.barracksLevel = nextConfig.level;
-      message = `Barracks upgraded to L${nextConfig.level}.`;
+      message = `Barracks upgraded to L${nextConfig.level}. Existing unlocked squads improved; newly unlocked squads start at LVL 1.`;
     }
 
     if (upgradeType === 'defense') {
       const nextConfig = UPGRADE_CONFIG.baseDefense.find((level) => level.level === currentBase.defenseLevel + 1);
       if (!nextConfig?.cost) throw new Error('Base defense is already at max level.');
+      if (currentBase.barracksLevel < nextConfig.level) throw new Error(`Base defense L${nextConfig.level} requires Barracks L${nextConfig.level}.`);
       cost = upgradeCostForPlayer(nextConfig.cost, player);
       nextBase.defenseLevel = nextConfig.level;
       message = `Base defense upgraded to L${nextConfig.level}.`;
@@ -3028,6 +3106,7 @@ async function upgradeBase(
       const currentOffenseLevel = currentBase.offenseLevel ?? 1;
       const nextConfig = UPGRADE_CONFIG.baseOffense.find((level) => level.level === currentOffenseLevel + 1);
       if (!nextConfig?.cost) throw new Error('Base sentry is already at max level.');
+      if (currentBase.barracksLevel < nextConfig.level) throw new Error(`Base sentry L${nextConfig.level} requires Barracks L${nextConfig.level}.`);
       cost = upgradeCostForPlayer(nextConfig.cost, player);
       nextBase.offenseLevel = nextConfig.level;
       message = `Base sentry upgraded to L${nextConfig.level}.`;
@@ -3116,6 +3195,18 @@ function totalBaseUpgradeInvestment(base: NonNullable<TileDoc['base']>) {
 function unitCostForPlayer(baseCost: number, player: PlayerDoc) {
   const productionDiscount = (player.talents.quartermaster ?? 0) * 0.05;
   return Math.max(1, Math.ceil(baseCost * (1 - productionDiscount)));
+}
+
+function deployedUnitTypeCount(armies: ArmyDoc[], ownerId: string, unitTypeId: UnitTypeId) {
+  return armies
+    .filter((army) => army.ownerId === ownerId)
+    .reduce((total, army) => total + army.units.filter((unit) => unit.typeId === unitTypeId).length, 0);
+}
+
+function deployedArtilleryCount(armies: ArmyDoc[], ownerId: string) {
+  return armies
+    .filter((army) => army.ownerId === ownerId)
+    .reduce((total, army) => total + army.units.filter((unit) => ARTILLERY_UNIT_TYPES.has(unit.typeId)).length, 0);
 }
 
 function upgradeCostForPlayer(baseCost: number, player: PlayerDoc) {

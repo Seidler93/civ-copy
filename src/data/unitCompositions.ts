@@ -24,13 +24,6 @@ export const UNIT_COMPOSITIONS: UnitCompositionConfig[] = [
     notes: ['Cheap answer to armor-heavy units.'],
   },
   {
-    id: 'field-hospital',
-    name: 'Field Hospital',
-    units: ['gunman', 'medic'],
-    buffs: ['Extra passive Medic healing', 'Medic can spend its action for a larger heal'],
-    notes: ['Durable infantry support unit for holding ground.'],
-  },
-  {
     id: 'entrenched-infantry',
     name: 'Entrenched Infantry',
     units: ['gunman', 'gunman'],

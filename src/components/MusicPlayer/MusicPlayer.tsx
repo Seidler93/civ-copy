@@ -1,6 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 
-const MUSIC_TRACKS = ['/audio/background.mp3', '/audio/background2.mp3', '/audio/background3.mp3', '/audio/background4.mp3'];
+const MUSIC_TRACKS = [
+  '/audio/background.mp3',
+  '/audio/background2.mp3',
+  '/audio/background3.mp3',
+  '/audio/background4.mp3',
+  '/audio/background5.mp3',
+];
 
 interface MusicPlayerProps {
   volume: number;

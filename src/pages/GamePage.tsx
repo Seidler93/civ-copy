@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { UPGRADE_CONFIG, BUILD_BASE_COST } from '../data/upgradeConfig';
+import { UPGRADE_CONFIG, BUILD_BASE_COST, MAX_ARTILLERY_UNITS, MAX_LOGISTICS_UNITS } from '../data/upgradeConfig';
 import { UNIT_TYPES } from '../data/unitTypes';
 import ArmyPanel from '../components/ArmyPanel/ArmyPanel';
 import BaseModal from '../components/BaseModal/BaseModal';
@@ -1231,7 +1231,7 @@ function chooseCpuEconomicAction(cpuPlayer: PlayerDoc, tiles: TileDoc[], armies:
     .find((tile) => {
       const nextLevel = (tile.base?.offenseLevel ?? 1) + 1;
       const nextCost = UPGRADE_CONFIG.baseOffense.find((entry) => entry.level === nextLevel)?.cost ?? Infinity;
-      return cpuPlayer.supplies >= nextCost;
+      return (tile.base?.barracksLevel ?? 1) >= nextLevel && cpuPlayer.supplies >= nextCost;
     });
   if (offenseBase) return { kind: 'upgradeOffense', tile: offenseBase };
 
@@ -1244,7 +1244,7 @@ function chooseCpuEconomicAction(cpuPlayer: PlayerDoc, tiles: TileDoc[], armies:
     .find((tile) => {
       const nextLevel = (tile.base?.defenseLevel ?? 1) + 1;
       const nextCost = UPGRADE_CONFIG.baseDefense.find((entry) => entry.level === nextLevel)?.cost ?? Infinity;
-      return cpuPlayer.supplies >= nextCost;
+      return (tile.base?.barracksLevel ?? 1) >= nextLevel && cpuPlayer.supplies >= nextCost;
     });
   if (defenseBase) return { kind: 'upgradeDefense', tile: defenseBase };
 
@@ -1257,11 +1257,16 @@ function chooseCpuRecruitAction(
   tiles: TileDoc[],
   armies: ArmyDoc[],
 ): CpuEconomicAction | null {
-  const builderCount = armies.filter((army) => army.ownerId === cpuPlayer.id && army.units.length === 1 && army.units[0].typeId === 'builder').length;
-  const wantsMoreBuilders = builderCount < Math.max(2, Math.min(3, friendlyBases.length));
+  const builderCount = armies
+    .filter((army) => army.ownerId === cpuPlayer.id)
+    .reduce((total, army) => total + army.units.filter((unit) => unit.typeId === 'builder').length, 0);
+  const artilleryCount = armies
+    .filter((army) => army.ownerId === cpuPlayer.id)
+    .reduce((total, army) => total + army.units.filter((unit) => ARTILLERY_UNIT_TYPES.has(unit.typeId)).length, 0);
+  const wantsMoreBuilders = builderCount < MAX_LOGISTICS_UNITS;
   const recruitPriority: UnitTypeId[] = wantsMoreBuilders
-    ? ['builder', 'tank', 'lightArtillery', 'smokeArtillery', 'siegeArtillery', 'antiVehicle', 'sniper', 'gunman', 'medic', 'recon']
-    : ['tank', 'lightArtillery', 'smokeArtillery', 'siegeArtillery', 'antiVehicle', 'sniper', 'gunman', 'medic', 'builder', 'recon'];
+    ? ['builder', 'tank', 'lightArtillery', 'smokeArtillery', 'siegeArtillery', 'antiVehicle', 'sniper', 'gunman']
+    : ['tank', 'lightArtillery', 'smokeArtillery', 'siegeArtillery', 'antiVehicle', 'sniper', 'gunman', 'builder'];
 
   for (const baseTile of [...friendlyBases].sort(
     (a, b) => cpuBasePressureScore(a, cpuPlayer.id, tiles) - cpuBasePressureScore(b, cpuPlayer.id, tiles),
@@ -1274,6 +1279,7 @@ function chooseCpuRecruitAction(
       const requiredLevel = UPGRADE_CONFIG.barracks.find((entry) => entry.unlocks.includes(unitTypeId))?.level ?? 1;
       if (sharedBarracksLevel < requiredLevel) continue;
       if ((ARTILLERY_UNIT_TYPES.has(unitTypeId) || unitTypeId === 'recon' || unitTypeId === 'builder') && spawnSpace < 1) continue;
+      if (ARTILLERY_UNIT_TYPES.has(unitTypeId) && artilleryCount >= MAX_ARTILLERY_UNITS) continue;
       const unitCost = UNIT_TYPES[unitTypeId].cost;
       if (cpuPlayer.supplies < unitCost) continue;
       if (unitTypeId === 'builder' && !wantsMoreBuilders) continue;

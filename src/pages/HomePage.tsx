@@ -1,4 +1,4 @@
-import { FormEvent, useMemo, useRef, useState } from 'react';
+import { FormEvent, useMemo, useState } from 'react';
 import { createCpuGame, createDevSoloGame, createGame, joinGameByCode } from '../firebase/gameService';
 import type { GameMode } from '../types/gameTypes';
 
@@ -10,11 +10,10 @@ type MenuAction = 'play' | 'host' | 'join';
 
 const ROUND_LIMIT_OPTIONS = [5, 10, 15, 20, 25, 30, 40, 50];
 const ROUND_DURATION_OPTIONS = [30, 45, 60, 90, 120];
-const MENU_HOVER_SOUND_PATH = '/audio/default-button-click.wav';
-
 export default function HomePage({ onGameSelected }: HomePageProps) {
   const [name, setName] = useState(localStorage.getItem('playerName') ?? '');
   const [code, setCode] = useState('');
+  const [hostCode, setHostCode] = useState('');
   const [menuAction, setMenuAction] = useState<MenuAction | null>(null);
   const [gameMode, setGameMode] = useState<GameMode>('turn-based');
   const [roundDurationSeconds, setRoundDurationSeconds] = useState(60);
@@ -22,7 +21,6 @@ export default function HomePage({ onGameSelected }: HomePageProps) {
   const [turnLimitRounds, setTurnLimitRounds] = useState(20);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const lastMenuHoverSoundAtRef = useRef(0);
 
   const saveName = () => localStorage.setItem('playerName', name.trim() || 'Anonymous Commander');
   const setup = {
@@ -51,7 +49,7 @@ export default function HomePage({ onGameSelected }: HomePageProps) {
     setError('');
     try {
       saveName();
-      onGameSelected(await createGame(name, setup));
+      onGameSelected(await createGame(name, setup, hostCode));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not create game.');
     } finally {
@@ -99,17 +97,8 @@ export default function HomePage({ onGameSelected }: HomePageProps) {
     }
   }
 
-  function playMenuHoverSound() {
-    const now = Date.now();
-    if (now - lastMenuHoverSoundAtRef.current < 120) return;
-    lastMenuHoverSoundAtRef.current = now;
-    const savedVfxVolume = Number(localStorage.getItem('vfxVolume'));
-    const vfxVolume = Number.isFinite(savedVfxVolume) ? Math.min(1, Math.max(0, savedVfxVolume)) : 0.75;
-    const sound = new Audio(MENU_HOVER_SOUND_PATH);
-    sound.volume = 0.42 * vfxVolume;
-    sound.play().catch(() => {
-      // Browsers may block hover audio until the first interaction.
-    });
+  function cleanGameCode(value: string) {
+    return value.toUpperCase().replace(/[^A-Z0-9]/g, '');
   }
 
   function renderSetupScreen() {
@@ -243,7 +232,24 @@ export default function HomePage({ onGameSelected }: HomePageProps) {
                 <input value={name} onChange={(event) => setName(event.target.value)} placeholder="Your name" />
               </label>
             </section>
-            <button disabled={busy}>{busy ? 'Working...' : 'Create Lobby'}</button>
+            <section className="home-setup-section">
+              <div className="home-section-copy">
+                <h3>Match Code</h3>
+                <p>Make your own code for siblings to join, or leave it blank and I will generate one.</p>
+              </div>
+              <label>
+                Game code
+                <input
+                  value={hostCode}
+                  onChange={(event) => setHostCode(cleanGameCode(event.target.value))}
+                  placeholder="FAMILY"
+                  maxLength={12}
+                />
+              </label>
+            </section>
+            <button disabled={busy || (hostCode.trim().length > 0 && hostCode.trim().length < 4)}>
+              {busy ? 'Working...' : 'Create Lobby'}
+            </button>
           </form>
         )}
 
@@ -268,9 +274,9 @@ export default function HomePage({ onGameSelected }: HomePageProps) {
                 Game code
                 <input
                   value={code}
-                  onChange={(event) => setCode(event.target.value.toUpperCase())}
-                  placeholder="ABC123"
-                  maxLength={6}
+                  onChange={(event) => setCode(cleanGameCode(event.target.value))}
+                  placeholder="FAMILY"
+                  maxLength={12}
                 />
               </label>
             </section>
@@ -328,8 +334,6 @@ export default function HomePage({ onGameSelected }: HomePageProps) {
             <button
               type="button"
               className="home-main-button secondary"
-              onMouseEnter={playMenuHoverSound}
-              onFocus={playMenuHoverSound}
               onClick={() => setMenuAction('play')}
             >
               <strong>Play Solo</strong>
@@ -337,8 +341,6 @@ export default function HomePage({ onGameSelected }: HomePageProps) {
             <button
               type="button"
               className="home-main-button secondary"
-              onMouseEnter={playMenuHoverSound}
-              onFocus={playMenuHoverSound}
               onClick={() => setMenuAction('host')}
             >
               <strong>Host</strong>
@@ -346,8 +348,6 @@ export default function HomePage({ onGameSelected }: HomePageProps) {
             <button
               type="button"
               className="home-main-button secondary"
-              onMouseEnter={playMenuHoverSound}
-              onFocus={playMenuHoverSound}
               onClick={() => setMenuAction('join')}
             >
               <strong>Join</strong>
@@ -357,8 +357,6 @@ export default function HomePage({ onGameSelected }: HomePageProps) {
             <button
               className="secondary home-dev-solo-button"
               disabled={busy}
-              onMouseEnter={playMenuHoverSound}
-              onFocus={playMenuHoverSound}
               onClick={handleDevSolo}
             >
               Start Dev Solo Game

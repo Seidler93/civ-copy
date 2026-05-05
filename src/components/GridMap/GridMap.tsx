@@ -22,6 +22,8 @@ import { visibleTileIdsForPlayer } from '../../utils/vision';
 import { connectedBaseTiles } from '../../utils/trenchNetwork';
 import Tile from './Tile';
 
+const BUTTON_HOVER_SOUND_PATH = '/audio/default-button-click.wav';
+
 interface FloatingCombatText {
   id: string;
   tileId: string;
@@ -248,6 +250,16 @@ export default function GridMap({
     setZoom((current) => clampZoom(current + delta));
   }
 
+  function playZoomButtonHoverSound() {
+    const savedVfxVolume = Number(localStorage.getItem('vfxVolume'));
+    const vfxVolume = Number.isFinite(savedVfxVolume) ? Math.min(1, Math.max(0, savedVfxVolume)) : 0.75;
+    const sound = new Audio(BUTTON_HOVER_SOUND_PATH);
+    sound.volume = 0.44 * vfxVolume;
+    sound.play().catch(() => {
+      // Browsers may reject audio before the first interaction.
+    });
+  }
+
   function handleWheel(event: WheelEvent<HTMLDivElement>) {
     event.preventDefault();
     const viewportBounds = event.currentTarget.getBoundingClientRect();
@@ -329,15 +341,17 @@ export default function GridMap({
   return (
     <div className="map-viewport-shell">
       <div className="map-controls">
-        <button className="secondary" onClick={() => changeZoom(-0.1)} aria-label="Zoom out">
+        <button className="secondary" onMouseEnter={playZoomButtonHoverSound} onFocus={playZoomButtonHoverSound} onClick={() => changeZoom(-0.1)} aria-label="Zoom out">
           -
         </button>
         <span>{Math.round(zoom * 100)}%</span>
-        <button className="secondary" onClick={() => changeZoom(0.1)} aria-label="Zoom in">
+        <button className="secondary" onMouseEnter={playZoomButtonHoverSound} onFocus={playZoomButtonHoverSound} onClick={() => changeZoom(0.1)} aria-label="Zoom in">
           +
         </button>
         <button
           className="secondary"
+          onMouseEnter={playZoomButtonHoverSound}
+          onFocus={playZoomButtonHoverSound}
           onClick={() => {
             setZoom(1);
             setPan({ x: 0, y: 0 });

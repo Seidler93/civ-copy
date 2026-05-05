@@ -1,11 +1,13 @@
 export const BASE_SUPPLIES_PER_TURN = 20;
-export const BUILD_BASE_COST = 60;
+export const BUILD_BASE_COST = 100;
 export const BUILD_TRENCH_COST = 20;
+export const MAX_LOGISTICS_UNITS = 2;
+export const MAX_ARTILLERY_UNITS = 3;
 
 export const UPGRADE_CONFIG = {
   barracks: [
-    { level: 1, name: 'Outpost', unlocks: ['gunman', 'recon', 'builder'] },
-    { level: 2, name: 'Armory', cost: 55, unlocks: ['sniper', 'antiVehicle', 'medic'] },
+    { level: 1, name: 'Outpost', unlocks: ['gunman', 'builder'] },
+    { level: 2, name: 'Armory', cost: 55, unlocks: ['sniper', 'antiVehicle'] },
     { level: 3, name: 'Vehicle Bay', cost: 90, unlocks: ['tank'] },
     { level: 4, name: 'Command Post', cost: 130, unlocks: [] },
     { level: 5, name: 'Fire Command', cost: 180, unlocks: ['lightArtillery', 'smokeArtillery', 'siegeArtillery'] },
