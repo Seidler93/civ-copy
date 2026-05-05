@@ -1,4 +1,11 @@
-import { startGame } from '../firebase/gameService';
+import { useState } from 'react';
+import {
+  PLAYER_COLORS,
+  kickLobbyPlayer,
+  setLobbyPlayerColor,
+  setLobbyPlayerReady,
+  startGame,
+} from '../firebase/gameService';
 import type { GameState } from '../types/gameTypes';
 
 interface LobbyPageProps {
@@ -8,15 +15,52 @@ interface LobbyPageProps {
 }
 
 export default function LobbyPage({ gameState, currentPlayerId, onLeave }: LobbyPageProps) {
+  const [message, setMessage] = useState<string | null>(null);
+  const [busyAction, setBusyAction] = useState<string | null>(null);
+  const currentPlayer = gameState.players.find((player) => player.id === currentPlayerId);
   const isHost = gameState.game.hostPlayerId === currentPlayerId;
-  const canStart = isHost && gameState.players.length >= 2;
+  const enoughPlayers = gameState.players.length >= 2;
+  const allReady = enoughPlayers && gameState.players.every((player) => player.isReady);
+  const canStart = isHost && allReady && !busyAction;
+  const usedColors = new Set(gameState.players.filter((player) => player.id !== currentPlayerId).map((player) => player.color));
+
+  const runLobbyAction = async (actionId: string, action: () => Promise<void>) => {
+    setBusyAction(actionId);
+    setMessage(null);
+    try {
+      await action();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Something went wrong.');
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  if (!currentPlayer) {
+    return (
+      <section className="lobby-page">
+        <div>
+          <p className="eyebrow">Game code</p>
+          <h1>{gameState.game.code}</h1>
+          <p>You are no longer in this lobby.</p>
+        </div>
+        <div className="panel lobby-control-panel">
+          <h2>Lobby Updated</h2>
+          <p className="muted">The host may have removed you, or this player session is no longer connected.</p>
+          <button className="secondary" onClick={onLeave}>
+            Leave Lobby
+          </button>
+        </div>
+      </section>
+    );
+  }
 
   return (
     <section className="lobby-page">
       <div>
         <p className="eyebrow">Game code</p>
         <h1>{gameState.game.code}</h1>
-        <p>Share this code with 1 to 4 other players. The host starts the game once everyone is in.</p>
+        <p>Share this code with 1 to 4 other players. Pick your team color, ready up, then the host can start.</p>
         <p className="muted">
           {gameState.game.mode === 'timed-simultaneous'
             ? `Mode: Timed simultaneous${gameState.game.roundDurationSeconds ? `, ${gameState.game.roundDurationSeconds}s rounds` : ''}.`
@@ -33,19 +77,81 @@ export default function LobbyPage({ gameState, currentPlayerId, onLeave }: Lobby
             : 'Map: Classic Front by default. If a 5th player joins, the game upgrades to the larger Grand Front map.'}
         </p>
       </div>
-      <div className="panel">
-        <h2>Players</h2>
-        <div className="player-list">
+      <div className="panel lobby-control-panel">
+        <div className="lobby-panel-heading">
+          <div>
+            <p className="eyebrow">Ready menu</p>
+            <h2>Commanders</h2>
+          </div>
+          <span className={`ready-count ${allReady ? 'ready' : ''}`}>
+            {gameState.players.filter((player) => player.isReady).length}/{gameState.players.length} ready
+          </span>
+        </div>
+
+        <div className="lobby-color-picker">
+          <span>Team color</span>
+          <div className="lobby-color-options" aria-label="Choose team color">
+            {PLAYER_COLORS.map((color) => {
+              const isSelected = currentPlayer.color.toLowerCase() === color.toLowerCase();
+              const isTaken = usedColors.has(color);
+              return (
+                <button
+                  key={color}
+                  className={`team-color-swatch ${isSelected ? 'selected' : ''}`}
+                  type="button"
+                  disabled={isTaken || Boolean(busyAction)}
+                  style={{ backgroundColor: color }}
+                  title={isTaken ? 'Taken' : isSelected ? 'Selected' : 'Choose color'}
+                  aria-label={isTaken ? 'Team color taken' : `Choose team color ${color}`}
+                  onClick={() => runLobbyAction(`color-${color}`, () => setLobbyPlayerColor(gameState.game.id, currentPlayerId, color))}
+                >
+                  {isSelected && <span />}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="player-list lobby-player-list">
           {gameState.players.map((player) => (
-            <div className="player-row" key={player.id}>
-              <span className="color-dot" style={{ backgroundColor: player.color }} />
-              <span>{player.name}</span>
-              {player.id === gameState.game.hostPlayerId && <span className="tag">Host</span>}
+            <div className={`player-row lobby-player-row ${player.isReady ? 'ready' : ''}`} key={player.id}>
+              <div className="lobby-player-identity">
+                <span className="color-dot" style={{ backgroundColor: player.color }} />
+                <span>{player.name}</span>
+              </div>
+              <div className="lobby-player-actions">
+                {player.id === gameState.game.hostPlayerId && <span className="tag">Host</span>}
+                <span className={`tag ${player.isReady ? 'ready-tag' : 'waiting-tag'}`}>{player.isReady ? 'Ready' : 'Not ready'}</span>
+                {isHost && player.id !== currentPlayerId && (
+                  <button
+                    className="tiny-danger-button"
+                    type="button"
+                    disabled={Boolean(busyAction)}
+                    onClick={() => runLobbyAction(`kick-${player.id}`, () => kickLobbyPlayer(gameState.game.id, currentPlayerId, player.id))}
+                  >
+                    Kick
+                  </button>
+                )}
+              </div>
             </div>
           ))}
         </div>
+
+        {message && <p className="form-error">{message}</p>}
+
         <div className="button-row">
-          <button disabled={!canStart} onClick={() => startGame(gameState.game.id)}>
+          <button
+            type="button"
+            disabled={Boolean(busyAction)}
+            onClick={() => runLobbyAction('ready', () => setLobbyPlayerReady(gameState.game.id, currentPlayerId, !currentPlayer.isReady))}
+          >
+            {currentPlayer.isReady ? 'Unready' : 'Ready Up'}
+          </button>
+          <button
+            disabled={!canStart}
+            onClick={() => runLobbyAction('start', () => startGame(gameState.game.id, currentPlayerId))}
+            title={!isHost ? 'Only the host can start.' : !enoughPlayers ? 'Need at least 2 players.' : !allReady ? 'Everyone must be ready.' : 'Start game'}
+          >
             Start Game
           </button>
           <button className="secondary" onClick={onLeave}>

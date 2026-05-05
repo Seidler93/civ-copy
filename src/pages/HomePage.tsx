@@ -1,4 +1,4 @@
-import { FormEvent, useMemo, useState } from 'react';
+import { FormEvent, useMemo, useRef, useState } from 'react';
 import { createCpuGame, createDevSoloGame, createGame, joinGameByCode } from '../firebase/gameService';
 import type { GameMode } from '../types/gameTypes';
 
@@ -10,6 +10,7 @@ type MenuAction = 'play' | 'host' | 'join';
 
 const ROUND_LIMIT_OPTIONS = [5, 10, 15, 20, 25, 30, 40, 50];
 const ROUND_DURATION_OPTIONS = [30, 45, 60, 90, 120];
+const MENU_HOVER_SOUND_PATH = '/audio/default-button-click.wav';
 
 export default function HomePage({ onGameSelected }: HomePageProps) {
   const [name, setName] = useState(localStorage.getItem('playerName') ?? '');
@@ -21,6 +22,7 @@ export default function HomePage({ onGameSelected }: HomePageProps) {
   const [turnLimitRounds, setTurnLimitRounds] = useState(20);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const lastMenuHoverSoundAtRef = useRef(0);
 
   const saveName = () => localStorage.setItem('playerName', name.trim() || 'Anonymous Commander');
   const setup = {
@@ -97,16 +99,30 @@ export default function HomePage({ onGameSelected }: HomePageProps) {
     }
   }
 
+  function playMenuHoverSound() {
+    const now = Date.now();
+    if (now - lastMenuHoverSoundAtRef.current < 120) return;
+    lastMenuHoverSoundAtRef.current = now;
+    const savedVfxVolume = Number(localStorage.getItem('vfxVolume'));
+    const vfxVolume = Number.isFinite(savedVfxVolume) ? Math.min(1, Math.max(0, savedVfxVolume)) : 0.75;
+    const sound = new Audio(MENU_HOVER_SOUND_PATH);
+    sound.volume = 0.42 * vfxVolume;
+    sound.play().catch(() => {
+      // Browsers may block hover audio until the first interaction.
+    });
+  }
+
   function renderSetupScreen() {
     if (!menuAction) return null;
 
     return (
-      <div className="home-actions home-setup-panel">
-        {error && <div className="notice error">{error}</div>}
-        <div className="home-setup-header">
-          <button type="button" className="secondary home-back-button" onClick={() => setMenuAction(null)} disabled={busy}>
-            Back
-          </button>
+      <div className="home-setup-shell">
+        <button type="button" className="secondary home-back-button" onClick={() => setMenuAction(null)} disabled={busy}>
+          Back
+        </button>
+        <div className="home-actions home-setup-panel">
+          {error && <div className="notice error">{error}</div>}
+          <div className="home-setup-header">
           <div>
             <p className="eyebrow">Game Setup</p>
             <h2>{setupHeading}</h2>
@@ -267,6 +283,7 @@ export default function HomePage({ onGameSelected }: HomePageProps) {
             Start Dev Solo Game
           </button>
         )}
+        </div>
       </div>
     );
   }
@@ -308,18 +325,42 @@ export default function HomePage({ onGameSelected }: HomePageProps) {
         <div className="home-main-menu-shell">
           {error && <div className="notice error">{error}</div>}
           <div className="home-main-menu-buttons">
-            <button type="button" className="home-main-button" onClick={() => setMenuAction('play')}>
+            <button
+              type="button"
+              className="home-main-button secondary"
+              onMouseEnter={playMenuHoverSound}
+              onFocus={playMenuHoverSound}
+              onClick={() => setMenuAction('play')}
+            >
               <strong>Play Solo</strong>
             </button>
-            <button type="button" className="home-main-button secondary" onClick={() => setMenuAction('host')}>
+            <button
+              type="button"
+              className="home-main-button secondary"
+              onMouseEnter={playMenuHoverSound}
+              onFocus={playMenuHoverSound}
+              onClick={() => setMenuAction('host')}
+            >
               <strong>Host</strong>
             </button>
-            <button type="button" className="home-main-button secondary" onClick={() => setMenuAction('join')}>
+            <button
+              type="button"
+              className="home-main-button secondary"
+              onMouseEnter={playMenuHoverSound}
+              onFocus={playMenuHoverSound}
+              onClick={() => setMenuAction('join')}
+            >
               <strong>Join</strong>
             </button>
           </div>
           {import.meta.env.DEV && (
-            <button className="secondary" disabled={busy} onClick={handleDevSolo}>
+            <button
+              className="secondary home-dev-solo-button"
+              disabled={busy}
+              onMouseEnter={playMenuHoverSound}
+              onFocus={playMenuHoverSound}
+              onClick={handleDevSolo}
+            >
               Start Dev Solo Game
             </button>
           )}

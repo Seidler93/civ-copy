@@ -1,5 +1,6 @@
 import { type CSSProperties, PointerEvent, WheelEvent, useMemo, useRef, useState } from 'react';
 import { UPGRADE_CONFIG } from '../../data/upgradeConfig';
+import type { OwnerTileColorMode } from '../../App';
 import type { ArmyDoc, GameState, MoveOrderMode, PlayerDoc, TileDoc } from '../../types/gameTypes';
 import { armyHasMedic } from '../../utils/combat';
 import {
@@ -77,6 +78,8 @@ interface GridMapProps {
   queuedMovePreview: QueuedMovePreview | null;
   unitTileOwnerTintEnabled: boolean;
   unitTileOwnerTintIntensity: number;
+  unitTileOwnerColorMode: OwnerTileColorMode;
+  unitTileOwnerSolidIntensity: number;
   unitOwnerBarEnabled: boolean;
   attackRadiusVisible: boolean;
   onTileClick: (tile: GameState['tiles'][number], occupyingArmy: ArmyDoc | null) => void;
@@ -111,6 +114,8 @@ export default function GridMap({
   queuedMovePreview,
   unitTileOwnerTintEnabled,
   unitTileOwnerTintIntensity,
+  unitTileOwnerColorMode,
+  unitTileOwnerSolidIntensity,
   unitOwnerBarEnabled,
   attackRadiusVisible,
   onTileClick,
@@ -536,6 +541,11 @@ export default function GridMap({
                 canCurrentPlayerAct &&
                 canMoveArmy(selectedArmy, selectedTile, tile, currentPlayer, gameState.tiles, gameState.armies),
             );
+            const selectedArmyCanStillMove = Boolean(
+                selectedArmy &&
+                movementAllowance(currentPlayer, selectedArmy) - (selectedArmy.movementUsedThisTurn ?? 0) > 0 &&
+                (selectedArmy.fortifyTurnsRemaining ?? 0) === 0,
+            );
             const isAttackRadius = Boolean(
                 attackRadiusVisible &&
                 selectedArmy &&
@@ -545,6 +555,7 @@ export default function GridMap({
                 !selectedArmy.hasActedThisTurn &&
                 normalArtilleryCanFire(selectedArmy, gameState.game.roundNumber) &&
                 isVisible &&
+                !(selectedArmyCanStillMove && isReachable) &&
                 isTileInAttackRange(selectedArmy, selectedTile, tile, gameState.tiles),
             );
             const isAttackable = Boolean(
@@ -596,6 +607,8 @@ export default function GridMap({
                 mineOwner={mineOwner}
                 unitTileOwnerTintEnabled={unitTileOwnerTintEnabled}
                 unitTileOwnerTintIntensity={unitTileOwnerTintIntensity}
+                unitTileOwnerColorMode={unitTileOwnerColorMode}
+                unitTileOwnerSolidIntensity={unitTileOwnerSolidIntensity}
                 unitOwnerBarEnabled={unitOwnerBarEnabled}
                 sentryCoverageColor={sentryCoverageByTileId.get(tile.id) ?? null}
                 isFogged={!isDiscovered}

@@ -4,9 +4,10 @@ const MUSIC_TRACKS = ['/audio/background.mp3', '/audio/background2.mp3', '/audio
 
 interface MusicPlayerProps {
   volume: number;
+  autoPlay?: boolean;
 }
 
-export default function MusicPlayer({ volume }: MusicPlayerProps) {
+export default function MusicPlayer({ volume, autoPlay = false }: MusicPlayerProps) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const resumePlaybackRef = useRef(false);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -31,6 +32,52 @@ export default function MusicPlayer({ volume }: MusicPlayerProps) {
       setIsPlaying(false);
     });
   }, [trackIndex, hasError]);
+
+  useEffect(() => {
+    if (!autoPlay || hasError) return undefined;
+
+    let hasStarted = false;
+    const tryStart = async () => {
+      if (hasStarted || hasError) return;
+      const audio = audioRef.current;
+      if (!audio) return;
+
+      try {
+        await audio.play();
+        hasStarted = true;
+        resumePlaybackRef.current = true;
+        setIsPlaying(true);
+      } catch {
+        resumePlaybackRef.current = true;
+      }
+    };
+
+    void tryStart();
+    window.addEventListener('pointerdown', tryStart, { once: true });
+    window.addEventListener('keydown', tryStart, { once: true });
+
+    return () => {
+      window.removeEventListener('pointerdown', tryStart);
+      window.removeEventListener('keydown', tryStart);
+    };
+  }, [autoPlay, hasError]);
+
+  useEffect(() => {
+    function handleToggleMusic() {
+      void toggleMusic();
+    }
+
+    function handleSkipMusic() {
+      skipSong();
+    }
+
+    window.addEventListener('grid-warfare:toggle-music', handleToggleMusic);
+    window.addEventListener('grid-warfare:skip-music', handleSkipMusic);
+    return () => {
+      window.removeEventListener('grid-warfare:toggle-music', handleToggleMusic);
+      window.removeEventListener('grid-warfare:skip-music', handleSkipMusic);
+    };
+  });
 
   function jumpToTrack(nextIndex: number, shouldKeepPlaying: boolean) {
     resumePlaybackRef.current = shouldKeepPlaying;

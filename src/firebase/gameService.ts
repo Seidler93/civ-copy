@@ -84,7 +84,7 @@ import {
 } from '../utils/movement';
 import { applyXp } from '../utils/xp';
 
-const PLAYER_COLORS = ['#d94848', '#2f80ed', '#2f9e44', '#a855f7', '#f08c00'];
+export const PLAYER_COLORS = ['#d94848', '#2f80ed', '#2f9e44', '#a855f7', '#f08c00'];
 const STARTING_SUPPLIES = 80;
 const MAX_PLAYERS = 5;
 type MapTemplateId = 'classic-front' | 'grand-front';
@@ -216,6 +216,8 @@ export async function createGame(playerName: string, setup: GameSetupOptions = D
 
 export async function createCpuGame(playerName: string, setup: GameSetupOptions = DEFAULT_GAME_SETUP) {
   const gameId = await createGame(playerName, setup);
+  const user = await ensureAnonymousUser();
+  await setDoc(doc(db, 'games', gameId, 'players', user.uid), { isReady: true }, { merge: true });
   await setDoc(doc(db, 'games', gameId, 'players', `cpu_${gameId}`), {
     name: 'CPU Commander',
     color: PLAYER_COLORS[1],
@@ -225,6 +227,7 @@ export async function createCpuGame(playerName: string, setup: GameSetupOptions 
     talentPoints: 0,
     talents: {},
     isEliminated: false,
+    isReady: true,
     stats: makeEmptyPlayerStats(),
     isCpu: true,
     exploredTileIds: [],
@@ -423,6 +426,58 @@ export async function joinGameByCode(code: string, playerName: string) {
   return gameDoc.id;
 }
 
+export async function setLobbyPlayerReady(gameId: string, playerId: string, isReady: boolean) {
+  await runTransaction(db, async (transaction) => {
+    const gameRef = doc(db, 'games', gameId);
+    const playerRef = doc(db, 'games', gameId, 'players', playerId);
+    const [gameSnap, playerSnap] = await Promise.all([transaction.get(gameRef), transaction.get(playerRef)]);
+    if (!gameSnap.exists()) throw new Error('Game not found.');
+    if (!playerSnap.exists()) throw new Error('You are not in this lobby.');
+    const game = { id: gameSnap.id, ...gameSnap.data() } as GameDoc;
+    if (game.status !== 'lobby') throw new Error('Readiness can only change before the game starts.');
+    transaction.update(playerRef, { isReady });
+  });
+}
+
+export async function setLobbyPlayerColor(gameId: string, playerId: string, color: string) {
+  const selectedColor = PLAYER_COLORS.find((playerColor) => playerColor.toLowerCase() === color.toLowerCase());
+  if (!selectedColor) throw new Error('Pick one of the available team colors.');
+
+  const gameRef = doc(db, 'games', gameId);
+  const playerRef = doc(db, 'games', gameId, 'players', playerId);
+  const [gameSnap, playerSnap, playersSnapshot] = await Promise.all([
+    getDoc(gameRef),
+    getDoc(playerRef),
+    getDocs(collection(db, 'games', gameId, 'players')),
+  ]);
+  if (!gameSnap.exists()) throw new Error('Game not found.');
+  if (!playerSnap.exists()) throw new Error('You are not in this lobby.');
+  const game = { id: gameSnap.id, ...gameSnap.data() } as GameDoc;
+  if (game.status !== 'lobby') throw new Error('Team colors can only change before the game starts.');
+  const colorTaken = playersSnapshot.docs.some((playerDoc) => {
+    const player = { id: playerDoc.id, ...playerDoc.data() } as PlayerDoc;
+    return player.id !== playerId && player.color.toLowerCase() === selectedColor.toLowerCase();
+  });
+  if (colorTaken) throw new Error('That team color is already taken.');
+
+  await setDoc(playerRef, { color: selectedColor, isReady: false }, { merge: true });
+}
+
+export async function kickLobbyPlayer(gameId: string, hostPlayerId: string, targetPlayerId: string) {
+  await runTransaction(db, async (transaction) => {
+    const gameRef = doc(db, 'games', gameId);
+    const targetRef = doc(db, 'games', gameId, 'players', targetPlayerId);
+    const [gameSnap, targetSnap] = await Promise.all([transaction.get(gameRef), transaction.get(targetRef)]);
+    if (!gameSnap.exists()) throw new Error('Game not found.');
+    const game = { id: gameSnap.id, ...gameSnap.data() } as GameDoc;
+    if (game.status !== 'lobby') throw new Error('Players can only be kicked before the game starts.');
+    if (game.hostPlayerId !== hostPlayerId) throw new Error('Only the host can kick players.');
+    if (targetPlayerId === game.hostPlayerId) throw new Error('The host cannot be kicked.');
+    if (!targetSnap.exists()) throw new Error('That player already left.');
+    transaction.delete(targetRef);
+  });
+}
+
 export function subscribeToGame(gameId: string, onChange: (state: GameState) => void, onError: (error: Error) => void) {
   const gameRef = doc(db, 'games', gameId);
   let latestGame: GameDoc | null = null;
@@ -475,15 +530,19 @@ export function subscribeToGame(gameId: string, onChange: (state: GameState) => 
   return () => unsubscribers.forEach((unsubscribe) => unsubscribe());
 }
 
-export async function startGame(gameId: string) {
+export async function startGame(gameId: string, starterPlayerId?: string) {
   const gameRef = doc(db, 'games', gameId);
   const gameSnap = await getDoc(gameRef);
   if (!gameSnap.exists()) throw new Error('Game not found.');
   const game = { id: gameSnap.id, ...gameSnap.data() } as GameDoc;
+  if (starterPlayerId && game.hostPlayerId !== starterPlayerId) throw new Error('Only the host can start the game.');
   const playersSnapshot = await getDocs(query(collection(db, 'games', gameId, 'players'), orderBy('joinedAt')));
   const players = playersSnapshot.docs.map((player) => ({ id: player.id, ...player.data() }) as PlayerDoc);
   if (players.length < 2) throw new Error('Start needs at least 2 players.');
   if (players.length > MAX_PLAYERS) throw new Error(`This map supports up to ${MAX_PLAYERS} players.`);
+  if (game.status === 'lobby' && players.some((player) => !player.isReady)) {
+    throw new Error('Everyone must be ready before starting.');
+  }
   const mapTemplate = chooseMapTemplateForPlayerCount(players.length);
 
   const batch = writeBatch(db);
@@ -609,6 +668,7 @@ export async function resetGameToLobby(gameId: string, playerId: string) {
       talentPoints: 0,
       talents: {},
       isEliminated: false,
+      isReady: false,
       stats: makeEmptyPlayerStats(),
       exploredTileIds: [],
     });
@@ -2758,6 +2818,7 @@ async function createPlayer(gameId: string, user: User, playerName: string, colo
     talentPoints: 0,
     talents: {},
     isEliminated: false,
+    isReady: false,
     stats: makeEmptyPlayerStats(),
     exploredTileIds: [],
     joinedAt: serverTimestamp(),

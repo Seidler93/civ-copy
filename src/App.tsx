@@ -10,6 +10,7 @@ import ButtonClickSound from './components/ButtonClickSound/ButtonClickSound';
 import HeaderBar from './components/HeaderBar/HeaderBar';
 
 export type MovementSoundMode = 'move' | 'tile';
+export type OwnerTileColorMode = 'overlay' | 'solid';
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
@@ -27,6 +28,13 @@ export default function App() {
   const [unitTileOwnerTintIntensity, setUnitTileOwnerTintIntensity] = useState(() => {
     const saved = Number(localStorage.getItem('unitTileOwnerTintIntensity'));
     return Number.isFinite(saved) ? Math.min(100, Math.max(4, saved)) : 60;
+  });
+  const [unitTileOwnerColorMode, setUnitTileOwnerColorMode] = useState<OwnerTileColorMode>(
+    () => (localStorage.getItem('unitTileOwnerColorMode') === 'solid' ? 'solid' : 'overlay'),
+  );
+  const [unitTileOwnerSolidIntensity, setUnitTileOwnerSolidIntensity] = useState(() => {
+    const saved = Number(localStorage.getItem('unitTileOwnerSolidIntensity'));
+    return Number.isFinite(saved) ? Math.min(100, Math.max(4, saved)) : 72;
   });
   const [unitOwnerBarEnabled, setUnitOwnerBarEnabled] = useState(
     () => localStorage.getItem('unitOwnerBarEnabled') !== 'false',
@@ -72,6 +80,14 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('unitTileOwnerTintIntensity', String(unitTileOwnerTintIntensity));
   }, [unitTileOwnerTintIntensity]);
+
+  useEffect(() => {
+    localStorage.setItem('unitTileOwnerColorMode', unitTileOwnerColorMode);
+  }, [unitTileOwnerColorMode]);
+
+  useEffect(() => {
+    localStorage.setItem('unitTileOwnerSolidIntensity', String(unitTileOwnerSolidIntensity));
+  }, [unitTileOwnerSolidIntensity]);
 
   useEffect(() => {
     localStorage.setItem('unitOwnerBarEnabled', String(unitOwnerBarEnabled));
@@ -137,6 +153,8 @@ export default function App() {
         movementSoundMode={movementSoundMode}
         unitTileOwnerTintEnabled={unitTileOwnerTintEnabled}
         unitTileOwnerTintIntensity={unitTileOwnerTintIntensity}
+        unitTileOwnerColorMode={unitTileOwnerColorMode}
+        unitTileOwnerSolidIntensity={unitTileOwnerSolidIntensity}
         unitOwnerBarEnabled={unitOwnerBarEnabled}
         attackRadiusVisible={attackRadiusVisible}
         qualityTabHidden={qualityTabHidden}
@@ -147,6 +165,8 @@ export default function App() {
         onMovementSoundModeChange={setMovementSoundMode}
         onUnitTileOwnerTintChange={setUnitTileOwnerTintEnabled}
         onUnitTileOwnerTintIntensityChange={setUnitTileOwnerTintIntensity}
+        onUnitTileOwnerColorModeChange={setUnitTileOwnerColorMode}
+        onUnitTileOwnerSolidIntensityChange={setUnitTileOwnerSolidIntensity}
         onUnitOwnerBarChange={setUnitOwnerBarEnabled}
         onAttackRadiusVisibleChange={setAttackRadiusVisible}
         onQualityTabHiddenChange={setQualityTabHidden}
@@ -168,6 +188,8 @@ export default function App() {
             movementSoundMode={movementSoundMode}
             unitTileOwnerTintEnabled={unitTileOwnerTintEnabled}
             unitTileOwnerTintIntensity={unitTileOwnerTintIntensity}
+            unitTileOwnerColorMode={unitTileOwnerColorMode}
+            unitTileOwnerSolidIntensity={unitTileOwnerSolidIntensity}
             unitOwnerBarEnabled={unitOwnerBarEnabled}
             attackRadiusVisible={attackRadiusVisible}
             qualityTabHidden={qualityTabHidden}

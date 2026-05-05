@@ -9,7 +9,7 @@ import PlayerPanel from '../components/PlayerPanel/PlayerPanel';
 import PlayerProgress from '../components/PlayerProgress/PlayerProgress';
 import TalentTreeModal from '../components/TalentTreeModal/TalentTreeModal';
 import TurnPanel from '../components/TurnPanel/TurnPanel';
-import type { MovementSoundMode } from '../App';
+import type { MovementSoundMode, OwnerTileColorMode } from '../App';
 import {
   attackTile,
   advanceSimultaneousRound,
@@ -120,6 +120,7 @@ const UNIT_SELECT_SOUND_PATH = '/audio/default-unit-select.wav';
 const UPGRADE_SOUND_PATH = '/audio/upgrade-sound.wav';
 const BASE_BUILD_SOUND_PATH = '/audio/base-build-sound.wav';
 const MOVEMENT_SOUND_PATH = '/audio/movement-sound.mp3';
+const DEATH_SOUND_PATH = '/audio/death1.wav';
 
 interface GamePageProps {
   gameState: GameState;
@@ -129,6 +130,8 @@ interface GamePageProps {
   movementSoundMode: MovementSoundMode;
   unitTileOwnerTintEnabled: boolean;
   unitTileOwnerTintIntensity: number;
+  unitTileOwnerColorMode: OwnerTileColorMode;
+  unitTileOwnerSolidIntensity: number;
   unitOwnerBarEnabled: boolean;
   attackRadiusVisible: boolean;
   qualityTabHidden: boolean;
@@ -143,6 +146,8 @@ export default function GamePage({
   movementSoundMode,
   unitTileOwnerTintEnabled,
   unitTileOwnerTintIntensity,
+  unitTileOwnerColorMode,
+  unitTileOwnerSolidIntensity,
   unitOwnerBarEnabled,
   attackRadiusVisible,
   qualityTabHidden,
@@ -262,6 +267,7 @@ export default function GamePage({
           message: `Your ${UNIT_TYPES[typeId]?.name ?? 'squad'} was killed.`,
           tone: 'danger',
         });
+        playUiSound(DEATH_SOUND_PATH, 0.52);
       });
     }
 
@@ -648,6 +654,9 @@ export default function GamePage({
       setMessage(result.message);
       showCombatText(result.attackerTileId, result.attackerLosses > 0 ? `-${result.attackerLosses * 10}` : 'Blocked');
       showCombatText(result.defenderTileId, result.defenderLosses > 0 ? `-${result.defenderLosses * 10}` : 'Blocked');
+      if (result.defenderDestroyed || result.attackerLosses > 0) {
+        playUiSound(DEATH_SOUND_PATH, result.defenderDestroyed ? 0.5 : 0.36);
+      }
       setCombatLogEntries((current) => [
         {
           id: `${Date.now()}_${Math.random()}`,
@@ -1059,6 +1068,8 @@ export default function GamePage({
           queuedMovePreview={queuedMovePreview ?? selectedQueuedMovePreview}
           unitTileOwnerTintEnabled={unitTileOwnerTintEnabled}
           unitTileOwnerTintIntensity={unitTileOwnerTintIntensity}
+          unitTileOwnerColorMode={unitTileOwnerColorMode}
+          unitTileOwnerSolidIntensity={unitTileOwnerSolidIntensity}
           unitOwnerBarEnabled={unitOwnerBarEnabled}
           attackRadiusVisible={attackRadiusVisible}
           onTileClick={handleTileClick}

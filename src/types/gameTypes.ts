@@ -68,6 +68,7 @@ export interface PlayerDoc {
   talentPoints: number;
   talents: Partial<Record<TalentId, number>>;
   isEliminated: boolean;
+  isReady?: boolean;
   stats?: PlayerStats;
   isCpu?: boolean;
   exploredTileIds?: string[];

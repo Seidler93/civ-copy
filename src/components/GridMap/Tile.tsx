@@ -1,4 +1,5 @@
 import type { CSSProperties } from 'react';
+import type { OwnerTileColorMode } from '../../App';
 import type { ArmyDoc, MoveOrderMode, PlayerDoc, TileDoc } from '../../types/gameTypes';
 import { BUILD_BASE_COST, BUILD_TRENCH_COST, UPGRADE_CONFIG } from '../../data/upgradeConfig';
 import { armyHealthPercent, armyPower } from '../../utils/combat';
@@ -26,6 +27,8 @@ interface TileProps {
   mineOwner: PlayerDoc | null;
   unitTileOwnerTintEnabled: boolean;
   unitTileOwnerTintIntensity: number;
+  unitTileOwnerColorMode: OwnerTileColorMode;
+  unitTileOwnerSolidIntensity: number;
   unitOwnerBarEnabled: boolean;
   sentryCoverageColor: string | null;
   isFogged: boolean;
@@ -83,6 +86,8 @@ export default function Tile({
   mineOwner,
   unitTileOwnerTintEnabled,
   unitTileOwnerTintIntensity,
+  unitTileOwnerColorMode,
+  unitTileOwnerSolidIntensity,
   unitOwnerBarEnabled,
   sentryCoverageColor,
   isFogged,
@@ -218,6 +223,7 @@ export default function Tile({
         isExploredButNotVisible ? 'scouted' : '',
         army && actionRemaining ? 'action-ready' : '',
         army && unitTileOwnerTintEnabled ? 'owner-tinted' : '',
+        army && unitTileOwnerTintEnabled && unitTileOwnerColorMode === 'solid' ? 'owner-solid' : '',
         army && hasBaseDefenseBuff ? 'base-defense-buffed-army' : '',
         isSelected ? 'selected' : '',
         isReachable ? 'reachable' : '',
@@ -260,10 +266,13 @@ export default function Tile({
         '--mine-owner-color': mineOwner?.color ?? '#f0c95d',
         '--sentry-coverage-color': sentryCoverageColor ?? 'transparent',
         '--unit-owner-tint': `${unitTileOwnerTintIntensity}%`,
+        '--unit-owner-solid': `${unitTileOwnerSolidIntensity}%`,
       } as CSSProperties}
     >
       {showContents && sentryCoverageColor && <span className="sentry-coverage" aria-hidden="true" />}
-      {showContents && army && unitTileOwnerTintEnabled && <span className="unit-owner-tint" aria-hidden="true" />}
+      {showContents && army && unitTileOwnerTintEnabled && unitTileOwnerColorMode === 'overlay' && (
+        <span className="unit-owner-tint" aria-hidden="true" />
+      )}
       {showContents && isSelected && <span className="tile-highlight selected-highlight" aria-hidden="true" />}
       {showContents && isReachable && <span className="tile-highlight movement-highlight" aria-hidden="true" />}
       {showContents && isAttackRadius && <span className="tile-highlight attack-radius-highlight" aria-hidden="true" />}
