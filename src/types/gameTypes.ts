@@ -35,6 +35,7 @@ export interface GameDoc {
   mapId?: string;
   mapName?: string;
   mode: GameMode;
+  allowMixedUnitCombines?: boolean;
   turnLimitRounds?: number | null;
   winnerPlayerId?: string | null;
   victoryReason?: VictoryReason | null;

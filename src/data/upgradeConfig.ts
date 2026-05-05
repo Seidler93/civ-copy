@@ -3,6 +3,7 @@ export const BUILD_BASE_COST = 100;
 export const BUILD_TRENCH_COST = 20;
 export const MAX_LOGISTICS_UNITS = 2;
 export const MAX_ARTILLERY_UNITS = 3;
+export const MAX_BASES = 5;
 
 export const UPGRADE_CONFIG = {
   barracks: [

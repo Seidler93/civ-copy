@@ -1,7 +1,7 @@
 import { type CSSProperties, useState } from 'react';
-import { UNIT_TYPES } from '../../data/unitTypes';
+import { unitCostForLevel, UNIT_TYPES } from '../../data/unitTypes';
 import { UNIT_COMPOSITIONS } from '../../data/unitCompositions';
-import { MAX_ARTILLERY_UNITS, MAX_LOGISTICS_UNITS, UPGRADE_CONFIG } from '../../data/upgradeConfig';
+import { MAX_ARTILLERY_UNITS, MAX_BASES, MAX_LOGISTICS_UNITS, UPGRADE_CONFIG } from '../../data/upgradeConfig';
 import { ARTILLERY_SQUADS, ARTILLERY_UNLOCK_BARRACKS_LEVEL } from '../../data/artilleryConfig';
 import type { ArmyDoc, PlayerDoc, TileDoc, UnitTypeId } from '../../types/gameTypes';
 import { connectedBaseSupplyBonus, connectedBaseTiles, effectiveBarracksLevel, effectiveUnitQualityLevel } from '../../utils/trenchNetwork';
@@ -68,6 +68,7 @@ export default function BaseModal({
   const artilleryInPlay = armies
     .filter((army) => army.ownerId === player.id)
     .reduce((total, army) => total + army.units.filter((unit) => ARTILLERY_UNIT_ORDER.includes(unit.typeId)).length, 0);
+  const basesControlled = tiles.filter((candidateTile) => candidateTile.base && !candidateTile.base.ruined && candidateTile.base.ownerId === player.id).length;
 
   async function runAction(actionId: string, action: () => Promise<void>) {
     setBusyAction(actionId);
@@ -86,6 +87,7 @@ export default function BaseModal({
             <p className="eyebrow">Base at {tile.x}, {tile.y}</p>
             <h2>Manage Base</h2>
           </div>
+          <strong className="modal-supplies">Bases {basesControlled}/{MAX_BASES}</strong>
           <strong className="modal-supplies">{player.supplies} supplies</strong>
           <button className="secondary icon-button" onClick={onClose} aria-label="Close base modal">
             X
@@ -102,11 +104,11 @@ export default function BaseModal({
           <div className="recruit-list barracks-recruit-grid">
             {BARRACKS_RECRUIT_ORDER.slice(0, 4).map((unitTypeId) => {
               const unit = UNIT_TYPES[unitTypeId];
-              const cost = unitCostForPlayer(unit.cost, player);
+              const currentLevel = effectiveUnitQualityLevel(tile, unitTypeId, tiles, armies);
+              const cost = unitCostForPlayer(unitCostForLevel(unitTypeId, currentLevel), player);
               const unlocked = unlockedUnits.has(unitTypeId);
               const canAfford = player.supplies >= cost;
               const logisticsCapReached = unitTypeId === 'builder' && logisticsInPlay >= MAX_LOGISTICS_UNITS;
-              const currentLevel = effectiveUnitQualityLevel(tile, unitTypeId, tiles, armies);
               const previewLevel = barracksPreviewLevel(isBarracksUpgradePreviewed, Boolean(nextBarracks), tile.base!.barracksLevel, unitTypeId, currentLevel);
               const qualityBonus = Math.max(0, currentLevel - 1);
               const qualityHealthBonus = qualityHealthBonusForUnit(unitTypeId, currentLevel);
@@ -150,6 +152,7 @@ export default function BaseModal({
                               <span className="note-tooltip">This squad must stay alone and cannot join a unit.</span>
                             </span>
                           )}
+                          {unitTypeId === 'builder' && <span className="source-note">Deployed {logisticsInPlay}/{MAX_LOGISTICS_UNITS}</span>}
                           {unlocked && unlockSource && <span className="source-note">From base at {unlockSource.x}, {unlockSource.y}</span>}
                           {logisticsCapReached && <span className="source-note">Max {MAX_LOGISTICS_UNITS} in play</span>}
                         </strong>
@@ -327,11 +330,11 @@ export default function BaseModal({
             </div>
             {BARRACKS_RECRUIT_ORDER.slice(4).map((unitTypeId) => {
               const unit = UNIT_TYPES[unitTypeId];
-              const cost = unitCostForPlayer(unit.cost, player);
+              const currentLevel = effectiveUnitQualityLevel(tile, unitTypeId, tiles, armies);
+              const cost = unitCostForPlayer(unitCostForLevel(unitTypeId, currentLevel), player);
               const unlocked = unlockedUnits.has(unitTypeId);
               const canAfford = player.supplies >= cost;
               const logisticsCapReached = unitTypeId === 'builder' && logisticsInPlay >= MAX_LOGISTICS_UNITS;
-              const currentLevel = effectiveUnitQualityLevel(tile, unitTypeId, tiles, armies);
               const previewLevel = barracksPreviewLevel(isBarracksUpgradePreviewed, Boolean(nextBarracks), tile.base!.barracksLevel, unitTypeId, currentLevel);
               const qualityBonus = Math.max(0, currentLevel - 1);
               const qualityHealthBonus = qualityHealthBonusForUnit(unitTypeId, currentLevel);
@@ -375,6 +378,7 @@ export default function BaseModal({
                               <span className="note-tooltip">This squad must stay alone and cannot join a unit.</span>
                             </span>
                           )}
+                          {unitTypeId === 'builder' && <span className="source-note">Deployed {logisticsInPlay}/{MAX_LOGISTICS_UNITS}</span>}
                           {unlocked && unlockSource && <span className="source-note">From base at {unlockSource.x}, {unlockSource.y}</span>}
                           {logisticsCapReached && <span className="source-note">Max {MAX_LOGISTICS_UNITS} in play</span>}
                         </strong>
@@ -504,7 +508,7 @@ export default function BaseModal({
                   unlocked: unlockedUnits.has(unitTypeId),
                   requiredBarracksLevel: UPGRADE_CONFIG.barracks.find((level) => level.unlocks.includes(unitTypeId))?.level ?? 1,
                   unlockSource: unlockSourceForBarracksLevel(tile, connectedBases, UPGRADE_CONFIG.barracks.find((level) => level.unlocks.includes(unitTypeId))?.level ?? 1),
-                  cost: unitCostForPlayer(unit.cost, player),
+                    cost: unitCostForPlayer(unitCostForLevel(unitTypeId, currentLevel), player),
                 };
               });
               const lockedUnit = qualityAdjustedUnits.find((unit) => !unit.unlocked);
@@ -705,11 +709,11 @@ function renderArtilleryRecruitRow({
 }) {
   const unitTypeId = squad.unitTypeId;
   const unit = UNIT_TYPES[unitTypeId];
-  const cost = unitCostForPlayer(unit.cost, player);
+  const currentLevel = effectiveUnitQualityLevel(tile, unitTypeId, tiles, armies);
+  const cost = unitCostForPlayer(unitCostForLevel(unitTypeId, currentLevel), player);
   const unlocked = unlockedUnits.has(unitTypeId);
   const canAfford = player.supplies >= cost;
   const artilleryCapReached = artilleryInPlay >= MAX_ARTILLERY_UNITS;
-  const currentLevel = effectiveUnitQualityLevel(tile, unitTypeId, tiles, armies);
   const qualityBonus = Math.max(0, currentLevel - 1);
   const requiredBarracksLevel = UPGRADE_CONFIG.barracks.find((level) => level.unlocks.includes(unitTypeId))?.level ?? ARTILLERY_UNLOCK_BARRACKS_LEVEL;
   const unlockSource = unlockSourceForBarracksLevel(tile, connectedBases, requiredBarracksLevel);
@@ -750,6 +754,7 @@ function renderArtilleryRecruitRow({
                 <span className="note-tooltip">This squad must stay alone and cannot join a unit.</span>
               </span>
               <span className="ability-note">Range 6</span>
+              <span className="source-note">Deployed {artilleryInPlay}/{MAX_ARTILLERY_UNITS}</span>
               {unlocked && unlockSource && <span className="source-note">From base at {unlockSource.x}, {unlockSource.y}</span>}
               {artilleryCapReached && <span className="source-note">Max {MAX_ARTILLERY_UNITS} in play</span>}
             </strong>

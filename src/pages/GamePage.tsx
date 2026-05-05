@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { UPGRADE_CONFIG, BUILD_BASE_COST, MAX_ARTILLERY_UNITS, MAX_LOGISTICS_UNITS } from '../data/upgradeConfig';
-import { UNIT_TYPES } from '../data/unitTypes';
+import { unitCostForLevel, UNIT_TYPES } from '../data/unitTypes';
 import ArmyPanel from '../components/ArmyPanel/ArmyPanel';
 import BaseModal from '../components/BaseModal/BaseModal';
 import CombatLog, { type CombatLogEntry } from '../components/CombatLog/CombatLog';
@@ -9,7 +9,8 @@ import PlayerPanel from '../components/PlayerPanel/PlayerPanel';
 import PlayerProgress from '../components/PlayerProgress/PlayerProgress';
 import TalentTreeModal from '../components/TalentTreeModal/TalentTreeModal';
 import TurnPanel from '../components/TurnPanel/TurnPanel';
-import type { MovementSoundMode, OwnerTileColorMode } from '../App';
+import type { MovementSoundMode, OwnerTileColorMode, UnitHealthBarPosition, UnitStatDisplayMode, UnitStatLabelMode } from '../App';
+import { effectiveUnitQualityLevel } from '../utils/trenchNetwork';
 import {
   attackTile,
   advanceSimultaneousRound,
@@ -133,6 +134,10 @@ interface GamePageProps {
   unitTileOwnerColorMode: OwnerTileColorMode;
   unitTileOwnerSolidIntensity: number;
   unitOwnerBarEnabled: boolean;
+  unitStatDisplayMode: UnitStatDisplayMode;
+  unitHealthBarPosition: UnitHealthBarPosition;
+  unitDefenseValueVisible: boolean;
+  unitStatLabelMode: UnitStatLabelMode;
   attackRadiusVisible: boolean;
   qualityTabHidden: boolean;
   onDevSpawnUnitTypeChange: (unitTypeId: UnitTypeId | '') => void;
@@ -149,6 +154,10 @@ export default function GamePage({
   unitTileOwnerColorMode,
   unitTileOwnerSolidIntensity,
   unitOwnerBarEnabled,
+  unitStatDisplayMode,
+  unitHealthBarPosition,
+  unitDefenseValueVisible,
+  unitStatLabelMode,
   attackRadiusVisible,
   qualityTabHidden,
   onDevSpawnUnitTypeChange,
@@ -506,7 +515,16 @@ export default function GamePage({
       selectedArmy.ownerId === currentPlayer.id &&
       occupyingArmy.ownerId === currentPlayer.id &&
       isMyTurn &&
-      canCombineArmies(selectedArmy, occupyingArmy, selectedTile, tile, currentPlayer, gameState.tiles, gameState.armies);
+      canCombineArmies(
+        selectedArmy,
+        occupyingArmy,
+        selectedTile,
+        tile,
+        currentPlayer,
+        gameState.tiles,
+        gameState.armies,
+        gameState.game.allowMixedUnitCombines ?? false,
+      );
 
     if (selectedArmyCanMerge) {
       setQueuedMovePreview(null);
@@ -1071,6 +1089,10 @@ export default function GamePage({
           unitTileOwnerColorMode={unitTileOwnerColorMode}
           unitTileOwnerSolidIntensity={unitTileOwnerSolidIntensity}
           unitOwnerBarEnabled={unitOwnerBarEnabled}
+          unitStatDisplayMode={unitStatDisplayMode}
+          unitHealthBarPosition={unitHealthBarPosition}
+          unitDefenseValueVisible={unitDefenseValueVisible}
+          unitStatLabelMode={unitStatLabelMode}
           attackRadiusVisible={attackRadiusVisible}
           onTileClick={handleTileClick}
           onAttackClick={handleAttackClick}
@@ -1280,7 +1302,7 @@ function chooseCpuRecruitAction(
       if (sharedBarracksLevel < requiredLevel) continue;
       if ((ARTILLERY_UNIT_TYPES.has(unitTypeId) || unitTypeId === 'recon' || unitTypeId === 'builder') && spawnSpace < 1) continue;
       if (ARTILLERY_UNIT_TYPES.has(unitTypeId) && artilleryCount >= MAX_ARTILLERY_UNITS) continue;
-      const unitCost = UNIT_TYPES[unitTypeId].cost;
+      const unitCost = unitCostForLevel(unitTypeId, effectiveUnitQualityLevel(baseTile, unitTypeId, tiles, armies));
       if (cpuPlayer.supplies < unitCost) continue;
       if (unitTypeId === 'builder' && !wantsMoreBuilders) continue;
       return { kind: 'recruit', tile: baseTile, unitTypeId };

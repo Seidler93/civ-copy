@@ -1,5 +1,5 @@
 import type { CSSProperties } from 'react';
-import type { OwnerTileColorMode } from '../../App';
+import type { OwnerTileColorMode, UnitHealthBarPosition, UnitStatDisplayMode, UnitStatLabelMode } from '../../App';
 import type { ArmyDoc, MoveOrderMode, PlayerDoc, TileDoc } from '../../types/gameTypes';
 import { BUILD_BASE_COST, BUILD_TRENCH_COST, UPGRADE_CONFIG } from '../../data/upgradeConfig';
 import { armyHealthPercent, armyPower } from '../../utils/combat';
@@ -30,6 +30,10 @@ interface TileProps {
   unitTileOwnerColorMode: OwnerTileColorMode;
   unitTileOwnerSolidIntensity: number;
   unitOwnerBarEnabled: boolean;
+  unitStatDisplayMode: UnitStatDisplayMode;
+  unitHealthBarPosition: UnitHealthBarPosition;
+  unitDefenseValueVisible: boolean;
+  unitStatLabelMode: UnitStatLabelMode;
   sentryCoverageColor: string | null;
   isFogged: boolean;
   isExploredButNotVisible: boolean;
@@ -89,6 +93,10 @@ export default function Tile({
   unitTileOwnerColorMode,
   unitTileOwnerSolidIntensity,
   unitOwnerBarEnabled,
+  unitStatDisplayMode,
+  unitHealthBarPosition,
+  unitDefenseValueVisible,
+  unitStatLabelMode,
   sentryCoverageColor,
   isFogged,
   isExploredButNotVisible,
@@ -155,6 +163,40 @@ export default function Tile({
   const dirtRotationClass = tile.terrainType === 'hill' ? `dirt-rot-${((tile.x * 17 + tile.y * 5) % 4) * 90}` : '';
   const waterVariantClass = tile.terrainType === 'water' ? `water-variant-${((tile.x * 3 + tile.y * 7) % 2) + 1}` : '';
   const waterRotationClass = tile.terrainType === 'water' ? `water-rot-${((tile.x * 11 + tile.y * 5) % 4) * 90}` : '';
+  const armyHealth = army ? armyHealthPercent(army.units) : 0;
+  const armyHealthTone = armyHealth < 35 ? 'danger' : armyHealth <= 60 ? 'warning' : 'healthy';
+  const armyAttackPower = army ? armyPower(army.units, 'attack') : 0;
+  const armyDefensePower = army ? armyPower(army.units, 'defense') : 0;
+  const attackLabel = unitStatLabelMode === 'icons' ? '⚔' : 'A';
+  const defenseLabel = unitStatLabelMode === 'icons' ? '🛡' : 'D';
+  const showIconLabels = unitStatLabelMode === 'icons';
+  const renderStatValue = (label: string, value: number, tone: 'attack' | 'defense') => (
+    <>
+      <span className={showIconLabels ? `army-stat-icon army-stat-icon-${tone}` : ''}>{label}</span>
+      {value}
+    </>
+  );
+  const showTopHealthDisplay = unitHealthBarPosition === 'top';
+  const showBarStats = unitStatDisplayMode === 'bar';
+  const healthBarMarkup = (
+    <span className={`unit-hp-bar unit-hp-bar-${armyHealthTone}`} aria-label={`${armyHealth} percent health`}>
+      <span style={{ width: `${armyHealth}%` }} />
+    </span>
+  );
+  const healthDisplayMarkup = showBarStats ? (
+    <span className="army-topline" aria-hidden="true">
+      {healthBarMarkup}
+      <span className="army-stat-pill" title={unitDefenseValueVisible ? 'Attack and defense power' : 'Attack power'}>
+        <span className="army-top-stat army-top-stat-attack">{renderStatValue(attackLabel, armyAttackPower, 'attack')}</span>
+        {unitDefenseValueVisible ? <span className="army-stat-pill-divider" aria-hidden="true" /> : null}
+        {unitDefenseValueVisible ? (
+          <span className="army-top-stat army-top-stat-defense">{renderStatValue(defenseLabel, armyDefensePower, 'defense')}</span>
+        ) : null}
+      </span>
+    </span>
+  ) : (
+    healthBarMarkup
+  );
   const actionButtons = [
     onAttackClick ? { label: 'Attack', className: 'attack-action', onClick: onAttackClick } : null,
     onCombineClick ? { label: 'Combine', className: 'combine-action', onClick: onCombineClick } : null,
@@ -336,6 +378,7 @@ export default function Tile({
         <span
           className={[
             'army-badge',
+            unitStatDisplayMode === 'bar' ? 'army-badge-top-stats' : 'army-badge-corner-stats',
             `army-facing-${army.lastMoveDirection ?? 'south'}`,
             moveAnimation ? 'moving-in' : '',
             attackFacingAngle !== null ? 'attacking' : '',
@@ -350,21 +393,26 @@ export default function Tile({
             } as CSSProperties
           }
         >
-          <span className="army-attack-chip" title="Attack power">
-            A{armyPower(army.units, 'attack')}
-          </span>
-          <span className="army-defense-chip" title="Defense power">
-            D{armyPower(army.units, 'defense')}
-          </span>
+          {unitStatDisplayMode === 'corners' ? (
+            <>
+              <span className="army-attack-chip" title="Attack power">
+                {renderStatValue(attackLabel, armyAttackPower, 'attack')}
+              </span>
+              {unitDefenseValueVisible ? (
+                <span className="army-defense-chip" title="Defense power">
+                  {renderStatValue(defenseLabel, armyDefensePower, 'defense')}
+                </span>
+              ) : null}
+            </>
+          ) : null}
+          {showTopHealthDisplay && healthDisplayMarkup}
           {unitOwnerBarEnabled && <span className="army-owner-strip" style={{ backgroundColor: armyOwner?.color }} />}
           <span className="unit-formation" aria-label={`Unit at ${tile.x}, ${tile.y}`}>
             {army.units.map((unit) => (
               <span className={`unit-art unit-art-${unit.typeId}`} key={unit.id} aria-hidden="true" />
             ))}
           </span>
-          <span className="unit-hp-bar" aria-label={`${armyHealthPercent(army.units)} percent health`}>
-            <span style={{ width: `${armyHealthPercent(army.units)}%` }} />
-          </span>
+          {!showTopHealthDisplay && healthDisplayMarkup}
         </span>
       )}
       {showContents && tile.trench && (

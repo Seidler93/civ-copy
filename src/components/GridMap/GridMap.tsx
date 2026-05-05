@@ -1,6 +1,6 @@
 import { type CSSProperties, PointerEvent, WheelEvent, useMemo, useRef, useState } from 'react';
 import { UPGRADE_CONFIG } from '../../data/upgradeConfig';
-import type { OwnerTileColorMode } from '../../App';
+import type { OwnerTileColorMode, UnitHealthBarPosition, UnitStatDisplayMode, UnitStatLabelMode } from '../../App';
 import type { ArmyDoc, GameState, MoveOrderMode, PlayerDoc, TileDoc } from '../../types/gameTypes';
 import { armyHasMedic } from '../../utils/combat';
 import {
@@ -23,6 +23,12 @@ import { connectedBaseTiles } from '../../utils/trenchNetwork';
 import Tile from './Tile';
 
 const BUTTON_HOVER_SOUND_PATH = '/audio/default-button-click.wav';
+const TILE_SIZE = 156;
+const TILE_GAP = 6;
+const GRID_PADDING = 8;
+const TILE_PITCH = TILE_SIZE + TILE_GAP;
+const TILE_CENTER = TILE_SIZE / 2;
+const DEFAULT_ZOOM = 0.5;
 
 interface FloatingCombatText {
   id: string;
@@ -83,6 +89,10 @@ interface GridMapProps {
   unitTileOwnerColorMode: OwnerTileColorMode;
   unitTileOwnerSolidIntensity: number;
   unitOwnerBarEnabled: boolean;
+  unitStatDisplayMode: UnitStatDisplayMode;
+  unitHealthBarPosition: UnitHealthBarPosition;
+  unitDefenseValueVisible: boolean;
+  unitStatLabelMode: UnitStatLabelMode;
   attackRadiusVisible: boolean;
   onTileClick: (tile: GameState['tiles'][number], occupyingArmy: ArmyDoc | null) => void;
   onAttackClick: (tile: TileDoc) => void;
@@ -119,6 +129,10 @@ export default function GridMap({
   unitTileOwnerColorMode,
   unitTileOwnerSolidIntensity,
   unitOwnerBarEnabled,
+  unitStatDisplayMode,
+  unitHealthBarPosition,
+  unitDefenseValueVisible,
+  unitStatLabelMode,
   attackRadiusVisible,
   onTileClick,
   onAttackClick,
@@ -136,7 +150,7 @@ export default function GridMap({
   onBaseClick,
   onCancelSmokeTargeting,
 }: GridMapProps) {
-  const [zoom, setZoom] = useState(1);
+  const [zoom, setZoom] = useState(DEFAULT_ZOOM);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [actionMenuTileId, setActionMenuTileId] = useState<string | null>(null);
   const [hoveredTileId, setHoveredTileId] = useState<string | null>(null);
@@ -154,6 +168,7 @@ export default function GridMap({
     [gameState.tiles, selectedArmy],
   );
   const statScale = Math.max(0.72, Math.min(1, 1 / zoom));
+  const combatStatScale = Math.max(1, Math.min(2.2, 1 / zoom));
   const visibleTileIds = useMemo(
     () => visibleTileIdsForPlayer(currentPlayer.id, gameState.tiles, gameState.armies),
     [currentPlayer.id, gameState.armies, gameState.tiles],
@@ -243,7 +258,7 @@ export default function GridMap({
     (gameState.game.mode === 'timed-simultaneous' || gameState.game.currentTurnPlayerId === currentPlayer.id);
 
   function clampZoom(value: number) {
-    return Math.min(2.35, Math.max(0.5, Number(value.toFixed(2))));
+    return Math.min(2.35, Math.max(0.25, Number(value.toFixed(2))));
   }
 
   function changeZoom(delta: number) {
@@ -285,8 +300,9 @@ export default function GridMap({
     }
     if (event.button !== 0 && event.button !== 1) return;
     const target = event.target as HTMLElement;
+    const isShiftPan = event.button === 0 && event.shiftKey;
     if (target.closest('button')) return;
-    if (event.button === 0 && target.closest('.tile')) return;
+    if (event.button === 0 && target.closest('.tile') && !isShiftPan) return;
     event.preventDefault();
     event.currentTarget.setPointerCapture(event.pointerId);
     pendingPanRef.current = pan;
@@ -353,7 +369,7 @@ export default function GridMap({
           onMouseEnter={playZoomButtonHoverSound}
           onFocus={playZoomButtonHoverSound}
           onClick={() => {
-            setZoom(1);
+            setZoom(DEFAULT_ZOOM);
             setPan({ x: 0, y: 0 });
           }}
         >
@@ -368,13 +384,18 @@ export default function GridMap({
         onPointerCancel={handlePointerUp}
         onWheel={handleWheel}
         style={{ cursor: dragStart ? 'grabbing' : 'grab' }}
+        title="Middle-click drag to pan, or hold Shift and drag with left click."
       >
         <div
           ref={gridRef}
           className={`grid-map ${dragStart ? 'panning' : ''}`}
           style={{
             '--stat-scale': statScale,
-            gridTemplateColumns: `repeat(${gameState.game.mapWidth}, 78px)`,
+            '--combat-stat-scale': combatStatScale,
+            '--tile-size': `${TILE_SIZE}px`,
+            '--tile-gap': `${TILE_GAP}px`,
+            '--grid-padding': `${GRID_PADDING}px`,
+            gridTemplateColumns: `repeat(${gameState.game.mapWidth}, ${TILE_SIZE}px)`,
             transform: `translate3d(${pan.x}px, ${pan.y}px, 0) scale(${zoom})`,
           } as CSSProperties}
         >
@@ -383,19 +404,19 @@ export default function GridMap({
               const fromTile = tileById.get(trace.fromTileId);
               const toTile = tileById.get(trace.toTileId);
               if (!fromTile || !toTile) return null;
-              const fromCenterX = fromTile.x * 82 + 39;
-              const fromCenterY = fromTile.y * 82 + 39;
-              const toCenterX = toTile.x * 82 + 39;
-              const toCenterY = toTile.y * 82 + 39;
+              const fromCenterX = fromTile.x * TILE_PITCH + TILE_CENTER;
+              const fromCenterY = fromTile.y * TILE_PITCH + TILE_CENTER;
+              const toCenterX = toTile.x * TILE_PITCH + TILE_CENTER;
+              const toCenterY = toTile.y * TILE_PITCH + TILE_CENTER;
               const aimDeltaX = toCenterX - fromCenterX;
               const aimDeltaY = toCenterY - fromCenterY;
               const aimLength = Math.hypot(aimDeltaX, aimDeltaY);
               const unitX = aimLength > 0 ? aimDeltaX / aimLength : 0;
               const unitY = aimLength > 0 ? aimDeltaY / aimLength : 0;
-              const fromX = fromCenterX + unitX * 15;
-              const fromY = fromCenterY + unitY * 15;
-              const toX = toCenterX - unitX * 20;
-              const toY = toCenterY - unitY * 20;
+              const fromX = fromCenterX + unitX * 28;
+              const fromY = fromCenterY + unitY * 28;
+              const toX = toCenterX - unitX * 34;
+              const toY = toCenterY - unitY * 34;
               const deltaX = toX - fromX;
               const deltaY = toY - fromY;
               const length = Math.hypot(deltaX, deltaY);
@@ -466,7 +487,16 @@ export default function GridMap({
                 selectedIsMine &&
                 selectedTile &&
                 canCurrentPlayerAct &&
-                canCombineArmies(selectedArmy, army, selectedTile, tile, currentPlayer, gameState.tiles, gameState.armies),
+                canCombineArmies(
+                  selectedArmy,
+                  army,
+                  selectedTile,
+                  tile,
+                  currentPlayer,
+                  gameState.tiles,
+                  gameState.armies,
+                  gameState.game.allowMixedUnitCombines ?? false,
+                ),
             );
             const canBuildBase = Boolean(
                 army &&
@@ -624,6 +654,10 @@ export default function GridMap({
                 unitTileOwnerColorMode={unitTileOwnerColorMode}
                 unitTileOwnerSolidIntensity={unitTileOwnerSolidIntensity}
                 unitOwnerBarEnabled={unitOwnerBarEnabled}
+                unitStatDisplayMode={unitStatDisplayMode}
+                unitHealthBarPosition={unitHealthBarPosition}
+                unitDefenseValueVisible={unitDefenseValueVisible}
+                unitStatLabelMode={unitStatLabelMode}
                 sentryCoverageColor={sentryCoverageByTileId.get(tile.id) ?? null}
                 isFogged={!isDiscovered}
                 isExploredButNotVisible={isDiscovered && !isVisible}

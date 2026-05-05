@@ -3,6 +3,7 @@ import { ARMY_SPACE_CAPACITY, armySpaceUsed } from './combat';
 
 export const ARTILLERY_ATTACK_RANGE = 6;
 export const STANDARD_ATTACK_RANGE = 2;
+export const SNIPER_ATTACK_RANGE = 3;
 export const RECON_MOVEMENT_BONUS = 3;
 export const NORMAL_ARTILLERY_RELOAD_ROUNDS = 2;
 export const ARTILLERY_UNIT_TYPES = new Set<UnitTypeId>(['artillery', 'lightArtillery', 'smokeArtillery', 'siegeArtillery']);
@@ -58,11 +59,13 @@ export function canCombineArmies(
   player: PlayerDoc,
   tiles: TileDoc[],
   armies: ArmyDoc[] = [],
+  allowMixedUnitCombines = false,
 ) {
   if (sourceArmy.id === targetArmy.id) return false;
   if (sourceArmy.ownerId !== player.id || targetArmy.ownerId !== player.id) return false;
   if (sourceArmy.hasMovedThisTurn) return false;
   if (armyMustStaySolo(sourceArmy) || armyMustStaySolo(targetArmy)) return false;
+  if (!allowMixedUnitCombines && !armiesShareSingleUnitType(sourceArmy, targetArmy)) return false;
   if (armySpaceUsed(sourceArmy.units) + armySpaceUsed(targetArmy.units) > ARMY_SPACE_CAPACITY) return false;
   const cost = movementCost(sourceTile, targetTile, tiles, {
     allowOccupiedTarget: true,
@@ -70,6 +73,16 @@ export function canCombineArmies(
     passThroughOwnerId: sourceArmy.ownerId,
   });
   return cost !== null && cost <= movementAllowance(player, sourceArmy) - (sourceArmy.movementUsedThisTurn ?? 0);
+}
+
+function armiesShareSingleUnitType(sourceArmy: ArmyDoc, targetArmy: ArmyDoc) {
+  const sourceTypeId = sourceArmy.units[0]?.typeId;
+  const targetTypeId = targetArmy.units[0]?.typeId;
+  if (!sourceTypeId || !targetTypeId || sourceTypeId !== targetTypeId) return false;
+  return (
+    sourceArmy.units.every((unit) => unit.typeId === sourceTypeId) &&
+    targetArmy.units.every((unit) => unit.typeId === targetTypeId)
+  );
 }
 
 export function armyHasBuilder(army: ArmyDoc) {
@@ -104,6 +117,10 @@ export function armyHasArtillery(army: ArmyDoc) {
 
 export function armyHasRecon(army?: ArmyDoc | null) {
   return Boolean(army?.units.some((unit) => unit.typeId === 'recon'));
+}
+
+export function isSoloSniperArmy(army?: ArmyDoc | null) {
+  return Boolean(army && army.units.length === 1 && army.units[0].typeId === 'sniper');
 }
 
 export function armyMustStaySolo(army: ArmyDoc) {
@@ -160,7 +177,9 @@ export function hasLineOfSight(from: TileDoc, to: TileDoc, tiles: TileDoc[]) {
 }
 
 export function attackRangeForArmy(army: ArmyDoc) {
-  return isSoloArtilleryArmy(army) ? ARTILLERY_ATTACK_RANGE : STANDARD_ATTACK_RANGE;
+  if (isSoloArtilleryArmy(army)) return ARTILLERY_ATTACK_RANGE;
+  if (isSoloSniperArmy(army)) return SNIPER_ATTACK_RANGE;
+  return STANDARD_ATTACK_RANGE;
 }
 
 export function getAttackStagingTile(

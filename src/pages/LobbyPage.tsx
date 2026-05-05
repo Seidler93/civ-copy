@@ -72,6 +72,9 @@ export default function LobbyPage({ gameState, currentPlayerId, onLeave }: Lobby
             : 'Match cap: none. Last commander standing wins.'}
         </p>
         <p className="muted">
+          Unit combining: {gameState.game.allowMixedUnitCombines ? 'mixed squads allowed, except solo-only units' : 'same squad types only'}.
+        </p>
+        <p className="muted">
           {gameState.players.length >= 5
             ? 'Map: Grand Front, the larger battlefield built for full 5-player wars.'
             : 'Map: Classic Front by default. If a 5th player joins, the game upgrades to the larger Grand Front map.'}

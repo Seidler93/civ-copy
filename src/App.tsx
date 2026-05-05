@@ -11,6 +11,9 @@ import HeaderBar from './components/HeaderBar/HeaderBar';
 
 export type MovementSoundMode = 'move' | 'tile';
 export type OwnerTileColorMode = 'overlay' | 'solid';
+export type UnitStatDisplayMode = 'bar' | 'corners';
+export type UnitHealthBarPosition = 'top' | 'bottom';
+export type UnitStatLabelMode = 'icons' | 'letters';
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
@@ -38,6 +41,18 @@ export default function App() {
   });
   const [unitOwnerBarEnabled, setUnitOwnerBarEnabled] = useState(
     () => localStorage.getItem('unitOwnerBarEnabled') !== 'false',
+  );
+  const [unitStatDisplayMode, setUnitStatDisplayMode] = useState<UnitStatDisplayMode>(
+    () => (localStorage.getItem('unitStatDisplayMode') === 'corners' ? 'corners' : 'bar'),
+  );
+  const [unitHealthBarPosition, setUnitHealthBarPosition] = useState<UnitHealthBarPosition>(
+    () => (localStorage.getItem('unitHealthBarPosition') === 'bottom' ? 'bottom' : 'top'),
+  );
+  const [unitDefenseValueVisible, setUnitDefenseValueVisible] = useState(
+    () => localStorage.getItem('unitDefenseValueVisible') !== 'false',
+  );
+  const [unitStatLabelMode, setUnitStatLabelMode] = useState<UnitStatLabelMode>(
+    () => (localStorage.getItem('unitStatLabelMode') === 'letters' ? 'letters' : 'icons'),
   );
   const [attackRadiusVisible, setAttackRadiusVisible] = useState(
     () => localStorage.getItem('attackRadiusVisible') !== 'false',
@@ -92,6 +107,22 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('unitOwnerBarEnabled', String(unitOwnerBarEnabled));
   }, [unitOwnerBarEnabled]);
+
+  useEffect(() => {
+    localStorage.setItem('unitStatDisplayMode', unitStatDisplayMode);
+  }, [unitStatDisplayMode]);
+
+  useEffect(() => {
+    localStorage.setItem('unitHealthBarPosition', unitHealthBarPosition);
+  }, [unitHealthBarPosition]);
+
+  useEffect(() => {
+    localStorage.setItem('unitDefenseValueVisible', String(unitDefenseValueVisible));
+  }, [unitDefenseValueVisible]);
+
+  useEffect(() => {
+    localStorage.setItem('unitStatLabelMode', unitStatLabelMode);
+  }, [unitStatLabelMode]);
 
   useEffect(() => {
     localStorage.setItem('attackRadiusVisible', String(attackRadiusVisible));
@@ -156,6 +187,10 @@ export default function App() {
         unitTileOwnerColorMode={unitTileOwnerColorMode}
         unitTileOwnerSolidIntensity={unitTileOwnerSolidIntensity}
         unitOwnerBarEnabled={unitOwnerBarEnabled}
+        unitStatDisplayMode={unitStatDisplayMode}
+        unitHealthBarPosition={unitHealthBarPosition}
+        unitDefenseValueVisible={unitDefenseValueVisible}
+        unitStatLabelMode={unitStatLabelMode}
         attackRadiusVisible={attackRadiusVisible}
         qualityTabHidden={qualityTabHidden}
         musicVolume={musicVolume}
@@ -168,6 +203,10 @@ export default function App() {
         onUnitTileOwnerColorModeChange={setUnitTileOwnerColorMode}
         onUnitTileOwnerSolidIntensityChange={setUnitTileOwnerSolidIntensity}
         onUnitOwnerBarChange={setUnitOwnerBarEnabled}
+        onUnitStatDisplayModeChange={setUnitStatDisplayMode}
+        onUnitHealthBarPositionChange={setUnitHealthBarPosition}
+        onUnitDefenseValueVisibleChange={setUnitDefenseValueVisible}
+        onUnitStatLabelModeChange={setUnitStatLabelMode}
         onAttackRadiusVisibleChange={setAttackRadiusVisible}
         onQualityTabHiddenChange={setQualityTabHidden}
         onMusicVolumeChange={setMusicVolume}
@@ -191,6 +230,10 @@ export default function App() {
             unitTileOwnerColorMode={unitTileOwnerColorMode}
             unitTileOwnerSolidIntensity={unitTileOwnerSolidIntensity}
             unitOwnerBarEnabled={unitOwnerBarEnabled}
+            unitStatDisplayMode={unitStatDisplayMode}
+            unitHealthBarPosition={unitHealthBarPosition}
+            unitDefenseValueVisible={unitDefenseValueVisible}
+            unitStatLabelMode={unitStatLabelMode}
             attackRadiusVisible={attackRadiusVisible}
             qualityTabHidden={qualityTabHidden}
             onDevSpawnUnitTypeChange={setDevSpawnUnitType}

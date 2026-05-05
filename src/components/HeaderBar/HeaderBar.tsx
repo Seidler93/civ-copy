@@ -3,7 +3,7 @@ import { UNIT_TYPES } from '../../data/unitTypes';
 import { devAddSupplies } from '../../firebase/gameService';
 import type { GameState, UnitTypeId } from '../../types/gameTypes';
 import { xpForNextLevel } from '../../utils/xp';
-import type { MovementSoundMode, OwnerTileColorMode } from '../../App';
+import type { MovementSoundMode, OwnerTileColorMode, UnitHealthBarPosition, UnitStatDisplayMode, UnitStatLabelMode } from '../../App';
 import GameSettings from '../GameSettings/GameSettings';
 import MusicPlayer from '../MusicPlayer/MusicPlayer';
 
@@ -19,6 +19,10 @@ type HeaderBarProps = {
   unitTileOwnerColorMode: OwnerTileColorMode;
   unitTileOwnerSolidIntensity: number;
   unitOwnerBarEnabled: boolean;
+  unitStatDisplayMode: UnitStatDisplayMode;
+  unitHealthBarPosition: UnitHealthBarPosition;
+  unitDefenseValueVisible: boolean;
+  unitStatLabelMode: UnitStatLabelMode;
   attackRadiusVisible: boolean;
   qualityTabHidden: boolean;
   musicVolume: number;
@@ -31,6 +35,10 @@ type HeaderBarProps = {
   onUnitTileOwnerColorModeChange: (mode: OwnerTileColorMode) => void;
   onUnitTileOwnerSolidIntensityChange: (value: number) => void;
   onUnitOwnerBarChange: (enabled: boolean) => void;
+  onUnitStatDisplayModeChange: (mode: UnitStatDisplayMode) => void;
+  onUnitHealthBarPositionChange: (position: UnitHealthBarPosition) => void;
+  onUnitDefenseValueVisibleChange: (visible: boolean) => void;
+  onUnitStatLabelModeChange: (mode: UnitStatLabelMode) => void;
   onAttackRadiusVisibleChange: (visible: boolean) => void;
   onQualityTabHiddenChange: (hidden: boolean) => void;
   onMusicVolumeChange: (value: number) => void;
@@ -58,6 +66,10 @@ export default function HeaderBar({
   unitTileOwnerColorMode,
   unitTileOwnerSolidIntensity,
   unitOwnerBarEnabled,
+  unitStatDisplayMode,
+  unitHealthBarPosition,
+  unitDefenseValueVisible,
+  unitStatLabelMode,
   attackRadiusVisible,
   qualityTabHidden,
   musicVolume,
@@ -70,6 +82,10 @@ export default function HeaderBar({
   onUnitTileOwnerColorModeChange,
   onUnitTileOwnerSolidIntensityChange,
   onUnitOwnerBarChange,
+  onUnitStatDisplayModeChange,
+  onUnitHealthBarPositionChange,
+  onUnitDefenseValueVisibleChange,
+  onUnitStatLabelModeChange,
   onAttackRadiusVisibleChange,
   onQualityTabHiddenChange,
   onMusicVolumeChange,
@@ -415,6 +431,86 @@ export default function HeaderBar({
                         </span>
                       </span>
                     </label>
+                    <div className="settings-option">
+                      <span className="settings-option-copy">
+                        <strong>Unit attack and defense labels</strong>
+                        <em>Show attack and defense beside the top health bar, or keep them in the tile corners.</em>
+                      </span>
+                      <div className="ownership-display-modes" aria-label="Unit stat label position">
+                        <button
+                          type="button"
+                          className={unitStatDisplayMode === 'bar' ? 'mode-active' : ''}
+                          onClick={() => onUnitStatDisplayModeChange('bar')}
+                        >
+                          On health bar
+                        </button>
+                        <button
+                          type="button"
+                          className={unitStatDisplayMode === 'corners' ? 'mode-active' : ''}
+                          onClick={() => onUnitStatDisplayModeChange('corners')}
+                        >
+                          Tile corners
+                        </button>
+                      </div>
+                    </div>
+                    <div className="settings-option">
+                      <span className="settings-option-copy">
+                        <strong>Unit health bar position</strong>
+                        <em>Anchor the health bar display above the unit art or below it.</em>
+                      </span>
+                      <div className="ownership-display-modes" aria-label="Unit health bar position">
+                        <button
+                          type="button"
+                          className={unitHealthBarPosition === 'top' ? 'mode-active' : ''}
+                          onClick={() => onUnitHealthBarPositionChange('top')}
+                        >
+                          Top
+                        </button>
+                        <button
+                          type="button"
+                          className={unitHealthBarPosition === 'bottom' ? 'mode-active' : ''}
+                          onClick={() => onUnitHealthBarPositionChange('bottom')}
+                        >
+                          Bottom
+                        </button>
+                      </div>
+                    </div>
+                    <label className="checkbox-setting settings-option">
+                      <span className="slide-toggle">
+                        <input
+                          type="checkbox"
+                          checked={unitDefenseValueVisible}
+                          onChange={(event) => onUnitDefenseValueVisibleChange(event.target.checked)}
+                        />
+                        <span className="slide-toggle-track" aria-hidden="true" />
+                      </span>
+                      <span className="settings-option-copy">
+                        <strong>Show defense value</strong>
+                        <em>Keeps the defense number in the unit stat display. Turn it off for a cleaner, attack-focused tile read.</em>
+                      </span>
+                    </label>
+                    <div className="settings-option">
+                      <span className="settings-option-copy">
+                        <strong>Attack and defense icon style</strong>
+                        <em>Use sword and shield icons for combat values, or switch back to classic A and D labels.</em>
+                      </span>
+                      <div className="ownership-display-modes" aria-label="Unit stat label style">
+                        <button
+                          type="button"
+                          className={unitStatLabelMode === 'icons' ? 'mode-active' : ''}
+                          onClick={() => onUnitStatLabelModeChange('icons')}
+                        >
+                          Sword + Shield
+                        </button>
+                        <button
+                          type="button"
+                          className={unitStatLabelMode === 'letters' ? 'mode-active' : ''}
+                          onClick={() => onUnitStatLabelModeChange('letters')}
+                        >
+                          A / D
+                        </button>
+                      </div>
+                    </div>
                     <label className="checkbox-setting settings-option">
                       <span className="slide-toggle">
                         <input

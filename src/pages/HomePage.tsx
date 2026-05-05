@@ -19,6 +19,7 @@ export default function HomePage({ onGameSelected }: HomePageProps) {
   const [roundDurationSeconds, setRoundDurationSeconds] = useState(60);
   const [turnLimitEnabled, setTurnLimitEnabled] = useState(false);
   const [turnLimitRounds, setTurnLimitRounds] = useState(20);
+  const [allowMixedUnitCombines, setAllowMixedUnitCombines] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 
@@ -27,6 +28,7 @@ export default function HomePage({ onGameSelected }: HomePageProps) {
     mode: gameMode,
     roundDurationSeconds: gameMode === 'timed-simultaneous' ? roundDurationSeconds : null,
     turnLimitRounds: turnLimitEnabled ? turnLimitRounds : null,
+    allowMixedUnitCombines,
   } as const;
 
   const setupHeading = useMemo(() => {
@@ -198,6 +200,29 @@ export default function HomePage({ onGameSelected }: HomePageProps) {
                   </option>
                 ))}
               </select>
+            </label>
+          </section>
+        )}
+
+        {menuAction !== 'join' && (
+          <section className="home-setup-section">
+            <div className="home-section-copy">
+              <h3>Unit Combining</h3>
+              <p>Keep units as same-type stacks only, or allow mixed squads to merge while still forcing solo-only squads to remain alone.</p>
+            </div>
+            <label className="rule-toggle-setting">
+              <span className="rule-toggle-copy">
+                <strong>Allow different squad types to combine</strong>
+                <em>Mixed units use the shorter shared attack range. Solo-only squads still cannot join other units.</em>
+              </span>
+              <span className="slide-toggle">
+                <input
+                  type="checkbox"
+                  checked={allowMixedUnitCombines}
+                  onChange={(event) => setAllowMixedUnitCombines(event.target.checked)}
+                />
+                <span className="slide-toggle-track" aria-hidden="true" />
+              </span>
             </label>
           </section>
         )}

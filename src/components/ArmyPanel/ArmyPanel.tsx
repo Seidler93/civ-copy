@@ -132,13 +132,16 @@ export default function ArmyPanel({
                               <button
                                 className="secondary dismiss-unit-button"
                                 type="button"
-                                disabled={(currentPlayer?.supplies ?? 0) < dismissUnitCost(unit.typeId)}
+                                disabled={
+                                  (currentPlayer?.supplies ?? 0) <
+                                  dismissUnitCost(unit.typeId, Math.max(unit.level ?? 1, unit.qualityLevel ?? 1))
+                                }
                                 onClick={() => {
                                   setOpenUnitMenuId(null);
                                   onDismissUnit?.(unit.id);
                                 }}
                               >
-                                Dismiss {dismissUnitCost(unit.typeId)}
+                                Dismiss {dismissUnitCost(unit.typeId, Math.max(unit.level ?? 1, unit.qualityLevel ?? 1))}
                               </button>
                             )}
                           </div>

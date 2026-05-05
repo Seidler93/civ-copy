@@ -1,4 +1,6 @@
-import type { UnitTypeConfig, UnitTypeId } from '../types/gameTypes';
+import type { UnitInstance, UnitTypeConfig, UnitTypeId } from '../types/gameTypes';
+
+export const UNIT_LEVEL_COST_STEP = 5;
 
 export const UNIT_TYPES: Record<UnitTypeId, UnitTypeConfig> = {
   gunman: {
@@ -13,7 +15,7 @@ export const UNIT_TYPES: Record<UnitTypeId, UnitTypeConfig> = {
   recon: {
     id: 'recon',
     name: 'Recon',
-    cost: 14,
+    cost: 15,
     space: 5,
     attack: 1,
     defense: 1,
@@ -22,16 +24,16 @@ export const UNIT_TYPES: Record<UnitTypeId, UnitTypeConfig> = {
   sniper: {
     id: 'sniper',
     name: 'Sniper',
-    cost: 18,
+    cost: 20,
     space: 10,
     attack: 4,
     defense: 1,
-    description: 'High attack and low defense, with an attacking bonus.',
+    description: 'High attack and low defense, with an attacking bonus and 1 extra tile of range when operating solo.',
   },
   tank: {
     id: 'tank',
     name: 'Tank',
-    cost: 35,
+    cost: 40,
     space: 20,
     attack: 5,
     defense: 5,
@@ -40,7 +42,7 @@ export const UNIT_TYPES: Record<UnitTypeId, UnitTypeConfig> = {
   antiVehicle: {
     id: 'antiVehicle',
     name: 'Anti-Vehicle',
-    cost: 24,
+    cost: 25,
     space: 10,
     attack: 3,
     defense: 3,
@@ -49,7 +51,7 @@ export const UNIT_TYPES: Record<UnitTypeId, UnitTypeConfig> = {
   medic: {
     id: 'medic',
     name: 'Medic',
-    cost: 22,
+    cost: 25,
     space: 10,
     attack: 1,
     defense: 2,
@@ -58,7 +60,7 @@ export const UNIT_TYPES: Record<UnitTypeId, UnitTypeConfig> = {
   builder: {
     id: 'builder',
     name: 'Logistics',
-    cost: 16,
+    cost: 20,
     space: 10,
     attack: 1,
     defense: 1,
@@ -67,7 +69,7 @@ export const UNIT_TYPES: Record<UnitTypeId, UnitTypeConfig> = {
   artillery: {
     id: 'artillery',
     name: 'Artillery',
-    cost: 120,
+    cost: 125,
     space: 20,
     attack: 6,
     defense: 1,
@@ -76,7 +78,7 @@ export const UNIT_TYPES: Record<UnitTypeId, UnitTypeConfig> = {
   lightArtillery: {
     id: 'lightArtillery',
     name: 'Light Barrage',
-    cost: 95,
+    cost: 100,
     space: 20,
     attack: 5,
     defense: 1,
@@ -85,7 +87,7 @@ export const UNIT_TYPES: Record<UnitTypeId, UnitTypeConfig> = {
   smokeArtillery: {
     id: 'smokeArtillery',
     name: 'Smoke Screen',
-    cost: 80,
+    cost: 85,
     space: 20,
     attack: 3,
     defense: 1,
@@ -94,10 +96,18 @@ export const UNIT_TYPES: Record<UnitTypeId, UnitTypeConfig> = {
   siegeArtillery: {
     id: 'siegeArtillery',
     name: 'Siege Shelling',
-    cost: 140,
+    cost: 145,
     space: 20,
     attack: 7,
     defense: 1,
     description: 'Solo artillery squad. Heavy shells are strongest against bases and fortified positions.',
   },
 };
+
+export function unitCostForLevel(unitTypeId: UnitTypeId, level = 1) {
+  return UNIT_TYPES[unitTypeId].cost + Math.max(0, level - 1) * UNIT_LEVEL_COST_STEP;
+}
+
+export function unitCostForInstance(unit: UnitInstance) {
+  return unitCostForLevel(unit.typeId, Math.max(unit.level ?? 1, unit.qualityLevel ?? 1));
+}

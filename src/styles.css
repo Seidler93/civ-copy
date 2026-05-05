@@ -517,7 +517,7 @@ h2 {
   position: absolute;
   left: 8%;
   right: 8%;
-  bottom: 1px;
+  bottom: 4px;
   z-index: 3;
   height: 7px;
   border-radius: 999px 999px 0 0;
@@ -1766,9 +1766,9 @@ h2 {
 .grid-map {
   position: relative;
   display: grid;
-  gap: 4px;
+  gap: var(--tile-gap, 4px);
   width: max-content;
-  padding: 8px;
+  padding: var(--grid-padding, 8px);
   background: rgba(7, 10, 13, 0.78);
   transform-origin: 0 0;
   user-select: none;
@@ -1778,7 +1778,7 @@ h2 {
 
 .bullet-layer {
   position: absolute;
-  inset: 8px;
+  inset: var(--grid-padding, 8px);
   z-index: 7;
   pointer-events: none;
 }
@@ -1891,8 +1891,8 @@ h2 {
   position: relative;
   aspect-ratio: 1;
   min-width: 0;
-  width: 78px;
-  min-height: 78px;
+  width: var(--tile-size, 78px);
+  min-height: var(--tile-size, 78px);
   border: 2px solid rgba(255, 255, 255, 0.16);
   border-radius: 4px;
   padding: 0;
@@ -2733,14 +2733,22 @@ h2 {
   inset: 4px;
   z-index: 2;
   display: grid;
-  grid-template-rows: minmax(0, 1fr) auto;
+  grid-template-rows: auto minmax(0, 1fr) auto;
   gap: 2px;
   overflow: visible;
   border-radius: 6px;
-  padding: 5px 5px 7px;
+  padding: 5px 5px 6px;
   background: transparent;
   border: 0;
   box-shadow: none;
+}
+
+.army-badge-corner-stats {
+  grid-template-rows: minmax(0, 1fr) auto;
+}
+
+.army-badge-top-stats {
+  gap: 3px;
 }
 
 .tile.base-defense-buffed-army .army-badge {
@@ -2748,21 +2756,77 @@ h2 {
   box-shadow: 0 0 0 2px rgba(156, 230, 255, 0.76);
 }
 
+.army-topline {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  padding: 0 1px;
+}
+
+.army-stat-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-height: calc(18px * var(--combat-stat-scale, 1));
+  padding: 0 calc(6px * var(--combat-stat-scale, 1));
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 999px;
+  background: rgba(14, 18, 22, 0.88);
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.34);
+}
+
+.army-stat-pill-divider {
+  width: 1px;
+  height: calc(10px * var(--combat-stat-scale, 1));
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.army-top-stat {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  min-height: 0;
+  font-size: calc(0.54rem * var(--combat-stat-scale, 1));
+  font-weight: 900;
+  line-height: 1;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.78);
+}
+
+.army-stat-icon {
+  display: inline-block;
+  margin-right: calc(2px * var(--combat-stat-scale, 1));
+  font-size: calc(1.18em * var(--combat-stat-scale, 1));
+  line-height: 0.8;
+  transform: translateY(1px);
+}
+
+.army-top-stat-attack {
+  color: #ffd7b5;
+}
+
+.army-top-stat-defense {
+  color: #9ce6ff;
+}
+
 .army-attack-chip,
 .army-defense-chip {
   position: absolute;
   top: -2px;
   z-index: 6;
-  min-width: 22px;
-  height: 18px;
+  min-width: calc(22px * var(--combat-stat-scale, 1));
+  height: calc(18px * var(--combat-stat-scale, 1));
   display: grid;
   place-items: center;
-  padding: 0 5px;
+  padding: 0 calc(5px * var(--combat-stat-scale, 1));
   border-radius: 999px;
   border: 1px solid rgba(255, 223, 104, 0.72);
   background: rgba(14, 18, 22, 0.88);
   color: #ffdf68;
-  font-size: 0.58rem;
+  font-size: calc(0.58rem * var(--combat-stat-scale, 1));
   font-weight: 900;
   line-height: 1;
   text-shadow: 0 1px 1px rgba(0, 0, 0, 0.72);
@@ -2958,7 +3022,7 @@ h2 {
   position: absolute;
   left: 8%;
   right: 8%;
-  bottom: 1px;
+  bottom: 4px;
   height: 6px;
   border: 1px solid rgba(255, 255, 255, 0.42);
   border-radius: 999px;
@@ -3028,7 +3092,8 @@ h2 {
 
 .unit-hp-bar {
   display: block;
-  height: 5px;
+  height: 7px;
+  min-width: 0;
   overflow: hidden;
   border: 1px solid rgba(7, 10, 13, 0.78);
   border-radius: 999px;
@@ -3042,8 +3107,18 @@ h2 {
   display: block;
   height: 100%;
   border-radius: inherit;
-  background: linear-gradient(90deg, #d94848, #f0c95d 48%, #4fb06d);
-  box-shadow: 0 0 5px rgba(240, 201, 93, 0.36);
+  background: #4fb06d;
+  box-shadow: 0 0 5px rgba(79, 176, 109, 0.4);
+}
+
+.unit-hp-bar-warning span {
+  background: #f0c95d;
+  box-shadow: 0 0 5px rgba(240, 201, 93, 0.42);
+}
+
+.unit-hp-bar-danger span {
+  background: #d94848;
+  box-shadow: 0 0 5px rgba(217, 72, 72, 0.46);
 }
 
 .tile.base-defense-buffed-army .unit-formation {
@@ -3554,9 +3629,9 @@ h2 {
 }
 
 .base-modal {
-  width: min(1900px, calc(100vw - 8px));
+  width: min(1560px, calc(100vw - 40px));
   height: auto;
-  max-height: calc(100vh - 8px);
+  max-height: calc(100vh - 36px);
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr);
   overflow: hidden;
@@ -4692,6 +4767,154 @@ h2 {
   font-weight: 900;
 }
 
+@media (max-height: 980px), (max-width: 1500px) {
+  .base-modal {
+    width: min(1400px, calc(100vw - 32px));
+    max-height: calc(100vh - 28px);
+    padding: 16px;
+  }
+
+  .modal-heading {
+    margin-bottom: 10px;
+  }
+
+  .base-tabs {
+    gap: 6px;
+    margin-bottom: 10px;
+  }
+
+  .base-tabs button,
+  .base-tab-static {
+    min-height: 34px;
+    font-size: 0.82rem;
+  }
+
+  .tab-level-badge {
+    right: 10px;
+    min-width: 20px;
+    height: 20px;
+    font-size: 0.68rem;
+  }
+
+  .recruit-list {
+    gap: 8px;
+    padding-right: 4px;
+  }
+
+  .barracks-recruit-grid {
+    grid-template-columns: repeat(4, minmax(170px, 1fr)) minmax(170px, 1fr);
+    gap: 10px;
+  }
+
+  .recruit-unit-card {
+    gap: 8px;
+    min-height: 304px;
+    padding: 10px;
+  }
+
+  .recruit-details {
+    grid-template-rows: 38px 76px 60px minmax(22px, auto);
+    gap: 7px;
+  }
+
+  .recruit-copy {
+    min-height: 38px;
+    padding-right: 22px;
+  }
+
+  .recruit-copy strong {
+    font-size: 0.88rem;
+  }
+
+  .recruit-row p,
+  .base-upgrade-card-copy p,
+  .home-section-copy p {
+    font-size: 0.75rem;
+  }
+
+  .recruit-stat-bars {
+    gap: 5px;
+    min-height: 60px;
+  }
+
+  .recruit-stat-bar {
+    grid-template-columns: 38px minmax(76px, 1fr) 22px;
+    gap: 6px;
+    font-size: 0.66rem;
+  }
+
+  .recruit-stat-bar strong {
+    font-size: 0.72rem;
+  }
+
+  .recruit-stat-bar strong em {
+    font-size: 0.62rem;
+  }
+
+  .recruit-unit-card .recruit-squad-preview {
+    height: 76px;
+  }
+
+  .recruit-squad-preview .unit-art {
+    transform: scale(1.28);
+  }
+
+  .recruit-squad-preview .unit-art-gunman {
+    transform: scale(1.08);
+  }
+
+  .base-upgrade-preview {
+    min-height: 90px;
+  }
+
+  .base-upgrade-preview img {
+    width: min(92px, 72%);
+    height: min(92px, 72%);
+  }
+
+  .base-upgrade-card-copy {
+    min-height: 70px;
+  }
+
+  .base-upgrade-card-stat {
+    min-height: 54px;
+  }
+
+  .quality-upgrade-card {
+    gap: 10px;
+    padding: 12px;
+  }
+
+  .composition-stat-bars {
+    grid-template-columns: repeat(2, minmax(148px, 1fr));
+    gap: 6px 12px;
+  }
+
+  .recruit-actions {
+    gap: 8px;
+    min-width: 110px;
+  }
+
+  .recruit-unit-card .recruit-actions {
+    gap: 6px 8px;
+  }
+
+  .recruit-unit-card .recruit-actions button,
+  .recruit-actions button {
+    min-height: 34px;
+    padding: 0 10px;
+    font-size: 0.78rem;
+  }
+
+  .lock-note,
+  .solo-note,
+  .ability-note,
+  .source-note,
+  .quiet-card-description {
+    font-size: 0.66rem;
+  }
+}
+
 @media (max-width: 1040px) {
   .game-page {
     grid-template-columns: 1fr;
@@ -4743,14 +4966,28 @@ h2 {
   }
 
   .tile {
-    width: 68px;
-    min-height: 68px;
+    width: calc(var(--tile-size, 78px) * 0.58);
+    min-height: calc(var(--tile-size, 78px) * 0.58);
   }
 
   .army-badge {
     inset: 3px;
     gap: 2px;
-    padding: 7px 4px 4px;
+    padding: 6px 4px 4px;
+  }
+
+  .army-topline {
+    gap: 4px;
+  }
+
+  .army-stat-pill {
+    gap: 3px;
+    min-height: 16px;
+    padding: 0 5px;
+  }
+
+  .army-top-stat {
+    font-size: 0.46rem;
   }
 
   .unit-art {

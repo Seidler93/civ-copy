@@ -16,9 +16,9 @@ import {
 } from 'firebase/firestore';
 import { signInAnonymously, type User } from 'firebase/auth';
 import { auth, db } from './firebaseConfig';
-import { UNIT_TYPES } from '../data/unitTypes';
+import { unitCostForLevel, UNIT_TYPES } from '../data/unitTypes';
 import { UNIT_COMPOSITIONS } from '../data/unitCompositions';
-import { BUILD_BASE_COST, BUILD_TRENCH_COST, MAX_ARTILLERY_UNITS, MAX_LOGISTICS_UNITS, UPGRADE_CONFIG } from '../data/upgradeConfig';
+import { BUILD_BASE_COST, BUILD_TRENCH_COST, MAX_ARTILLERY_UNITS, MAX_BASES, MAX_LOGISTICS_UNITS, UPGRADE_CONFIG } from '../data/upgradeConfig';
 import { previousTalentInBranch, talentById } from '../data/talentConfig';
 import type {
   ArmyDoc,
@@ -165,16 +165,18 @@ export interface GameSetupOptions {
   mode: GameMode;
   roundDurationSeconds?: number | null;
   turnLimitRounds?: number | null;
+  allowMixedUnitCombines?: boolean;
 }
 
 const DEFAULT_GAME_SETUP: GameSetupOptions = {
   mode: 'turn-based',
   roundDurationSeconds: null,
   turnLimitRounds: null,
+  allowMixedUnitCombines: false,
 };
 
-export function dismissUnitCost(unitTypeId: UnitTypeId) {
-  return Math.max(DISMISS_UNIT_MIN_COST, Math.ceil(UNIT_TYPES[unitTypeId].cost * DISMISS_UNIT_COST_RATE));
+export function dismissUnitCost(unitTypeId: UnitTypeId, level = 1) {
+  return Math.max(DISMISS_UNIT_MIN_COST, Math.ceil(unitCostForLevel(unitTypeId, level) * DISMISS_UNIT_COST_RATE));
 }
 
 export async function ensureAnonymousUser() {
@@ -196,6 +198,7 @@ export async function createGame(playerName: string, setup: GameSetupOptions = D
     mapId: DEFAULT_MAP_TEMPLATE.id,
     mapName: DEFAULT_MAP_TEMPLATE.name,
     mode: normalizedSetup.mode,
+    allowMixedUnitCombines: normalizedSetup.allowMixedUnitCombines,
     turnLimitRounds: normalizedSetup.turnLimitRounds,
     winnerPlayerId: null,
     victoryReason: null,
@@ -248,6 +251,7 @@ export async function createDevSoloGame() {
     mapId: DEFAULT_MAP_TEMPLATE.id,
     mapName: DEFAULT_MAP_TEMPLATE.name,
     mode: 'turn-based',
+    allowMixedUnitCombines: false,
     turnLimitRounds: null,
     winnerPlayerId: null,
     victoryReason: null,
@@ -1014,7 +1018,7 @@ export async function combineArmies(gameId: string, sourceArmyId: string, target
     const armiesSnapshot = await getDocs(collection(db, 'games', gameId, 'armies'));
     const armies = armiesSnapshot.docs.map((armyDoc) => ({ id: armyDoc.id, ...armyDoc.data() }) as ArmyDoc);
     if (!canPlayerActInGame(game, playerId)) throw new Error(actionUnavailableMessage(game, 'It is not your turn.'));
-    if (!canCombineArmies(sourceArmy, targetArmy, sourceTile, targetTile, player, tiles, armies)) {
+    if (!canCombineArmies(sourceArmy, targetArmy, sourceTile, targetTile, player, tiles, armies, game.allowMixedUnitCombines ?? false)) {
       throw new Error('Those units cannot combine.');
     }
 
@@ -1059,7 +1063,7 @@ export async function dismissUnitFromArmy(gameId: string, armyId: string, unitId
     if (army.ownerId !== playerId) throw new Error('You do not control that unit.');
     if (!unit) throw new Error('That squad is no longer in this unit.');
 
-    const cost = dismissUnitCost(unit.typeId);
+    const cost = dismissUnitCost(unit.typeId, Math.max(unit.level ?? 1, unit.qualityLevel ?? 1));
     if (player.supplies < cost) throw new Error(`You need ${cost} supplies to dismiss ${UNIT_TYPES[unit.typeId].name}.`);
 
     const remainingUnits = army.units.filter((candidate) => candidate.id !== unitId);
@@ -1508,7 +1512,8 @@ export async function recruitUnitAtBase(gameId: string, baseTileId: string, unit
     if (!baseTile.base || baseTile.base.ownerId !== playerId) throw new Error('You do not control that base.');
     if (!isUnitUnlocked(unitTypeId, sharedBarracksLevel)) throw new Error(`${unitType.name} is not unlocked here.`);
 
-    const cost = unitCostForPlayer(unitType.cost, player);
+    const qualityLevel = effectiveUnitQualityLevel(baseTile, unitTypeId, effectiveBaseTiles, allArmies);
+    const cost = unitCostForPlayer(unitCostForLevel(unitTypeId, qualityLevel), player);
     if (player.supplies < cost) throw new Error(`You need ${cost} supplies to recruit ${unitType.name}.`);
 
     const playerArmiesSnapshot = await getDocs(query(collection(db, 'games', gameId, 'armies'), where('ownerId', '==', playerId)));
@@ -1552,7 +1557,6 @@ export async function recruitUnitAtBase(gameId: string, baseTileId: string, unit
       .filter((entry): entry is { ref: ReturnType<typeof doc>; tile: TileDoc } => entry !== null && !isImpassableTerrain(entry.tile))
       .find(({ tile }) => !tile.armyId);
 
-    const qualityLevel = effectiveUnitQualityLevel(baseTile, unitTypeId, effectiveBaseTiles, allArmies);
     const qualityBonus = Math.max(0, qualityLevel - 1);
     const newUnit = makeUnit(unitTypeId, qualityBonus);
 
@@ -1656,7 +1660,11 @@ export async function recruitUnitCompositionAtBase(
     const totalSpace = composition.units.reduce((total, unitTypeId) => total + UNIT_TYPES[unitTypeId].space, 0);
     if (totalSpace > ARMY_SPACE_CAPACITY) throw new Error('That unit composition is too large.');
 
-    const cost = composition.units.reduce((total, unitTypeId) => total + unitCostForPlayer(UNIT_TYPES[unitTypeId].cost, player), 0);
+    const cost = composition.units.reduce(
+      (total, unitTypeId) =>
+        total + unitCostForPlayer(unitCostForLevel(unitTypeId, effectiveUnitQualityLevel(baseTile, unitTypeId, allTiles, allArmies)), player),
+      0,
+    );
     if (player.supplies < cost) throw new Error(`You need ${cost} supplies to recruit ${composition.name}.`);
 
     const deployedUnitCount = allArmies
@@ -1758,6 +1766,10 @@ export async function buildBaseWithBuilder(gameId: string, builderArmyId: string
     if (player.supplies < BUILD_BASE_COST) throw new Error(`You need ${BUILD_BASE_COST} supplies to build a base.`);
 
     const tilesSnapshot = await getDocs(collection(db, 'games', gameId, 'tiles'));
+    const ownedBaseCount = tilesSnapshot.docs
+      .map((baseTileDoc) => ({ id: baseTileDoc.id, ...baseTileDoc.data() }) as TileDoc)
+      .filter((otherTile) => otherTile.base && !otherTile.base.ruined && otherTile.base.ownerId === playerId).length;
+    if (ownedBaseCount >= MAX_BASES) throw new Error(`You can only control ${MAX_BASES} bases at once.`);
     const tooCloseBase = tilesSnapshot.docs
       .map((baseTileDoc) => ({ id: baseTileDoc.id, ...baseTileDoc.data() }) as TileDoc)
       .some((otherTile) => otherTile.base && manhattanDistance(tile, otherTile) < 5);
@@ -1810,6 +1822,11 @@ export async function reclaimBaseWithBuilder(gameId: string, builderArmyId: stri
     }
     if (!canLogisticsBuildBase(builderArmy)) throw new Error('This Logistics squad cannot reclaim bases yet.');
     if (!tile.base?.ruined) throw new Error('There is no ruined base on this tile.');
+    const tilesSnapshot = await getDocs(collection(db, 'games', gameId, 'tiles'));
+    const ownedBaseCount = tilesSnapshot.docs
+      .map((baseTileDoc) => ({ id: baseTileDoc.id, ...baseTileDoc.data() }) as TileDoc)
+      .filter((otherTile) => otherTile.base && !otherTile.base.ruined && otherTile.base.ownerId === playerId).length;
+    if (ownedBaseCount >= MAX_BASES) throw new Error(`You can only control ${MAX_BASES} bases at once.`);
 
     const cost = reclaimBaseCost(tile.base);
     if (player.supplies < cost) throw new Error(`You need ${cost} supplies to reclaim this base.`);
@@ -3232,12 +3249,14 @@ function makeUnit(typeId: keyof typeof UNIT_TYPES, qualityBonus = 0): UnitInstan
 
 function normalizeGameSetup(setup: GameSetupOptions) {
   const normalizedTurnLimit = normalizeTurnLimit(setup.turnLimitRounds);
+  const allowMixedUnitCombines = setup.allowMixedUnitCombines === true;
   if (setup.mode === 'timed-simultaneous') {
     const duration = Number(setup.roundDurationSeconds ?? 60);
     return {
       mode: 'timed-simultaneous' as const,
       roundDurationSeconds: [30, 45, 60, 90, 120].includes(duration) ? duration : 60,
       turnLimitRounds: normalizedTurnLimit,
+      allowMixedUnitCombines,
     };
   }
 
@@ -3245,6 +3264,7 @@ function normalizeGameSetup(setup: GameSetupOptions) {
     mode: 'turn-based' as const,
     roundDurationSeconds: null,
     turnLimitRounds: normalizedTurnLimit,
+    allowMixedUnitCombines,
   };
 }
 
