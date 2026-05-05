@@ -1,5 +1,12 @@
 {
   "projects": {
     "default": "flexxdashboard"
+  },
+  "targets": {
+    "flexxdashboard": {
+      "hosting": {
+        "app": ["gridwarfare"]
+      }
+    }
   }
 }

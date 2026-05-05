@@ -277,6 +277,97 @@ h2 {
   accent-color: #f0c95d;
 }
 
+.rule-toggle-setting {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+}
+
+.rule-toggle-copy {
+  display: grid;
+  gap: 4px;
+}
+
+.rule-toggle-copy strong {
+  color: #f4ead0;
+  font-size: 0.92rem;
+}
+
+.rule-toggle-copy em {
+  color: #bdb8aa;
+  font-size: 0.82rem;
+  font-style: normal;
+  line-height: 1.45;
+}
+
+.slide-toggle {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  width: 58px;
+  height: 32px;
+}
+
+.slide-toggle input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.slide-toggle-track {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.14);
+  transition:
+    background 150ms ease,
+    border-color 150ms ease,
+    box-shadow 150ms ease;
+}
+
+.slide-toggle-track::after {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 4px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #f4ead0;
+  box-shadow: 0 3px 8px rgba(0, 0, 0, 0.26);
+  transition: transform 150ms ease, background 150ms ease;
+}
+
+.slide-toggle input:checked + .slide-toggle-track {
+  border-color: rgba(240, 201, 93, 0.72);
+  background: rgba(240, 201, 93, 0.28);
+  box-shadow:
+    inset 0 0 0 1px rgba(0, 0, 0, 0.12),
+    0 0 14px rgba(240, 201, 93, 0.18);
+}
+
+.slide-toggle input:checked + .slide-toggle-track::after {
+  transform: translateX(26px);
+  background: #f0c95d;
+}
+
+.slide-toggle input:focus-visible + .slide-toggle-track {
+  outline: 2px solid rgba(255, 223, 104, 0.72);
+  outline-offset: 3px;
+}
+
+.disabled-setting {
+  opacity: 0.58;
+}
+
 .audio-settings select {
   min-height: 34px;
 }
@@ -368,6 +459,39 @@ h2 {
   min-height: var(--play-area-height);
 }
 
+.home-page.setup-active {
+  grid-template-columns: minmax(0, 920px);
+}
+
+.home-page-background {
+  position: relative;
+  overflow: hidden;
+  width: 100%;
+  min-height: var(--play-area-height);
+  border-radius: 0;
+  padding: 28px;
+  background:
+    linear-gradient(90deg, rgba(10, 14, 18, 0.88) 0%, rgba(10, 14, 18, 0.76) 42%, rgba(10, 14, 18, 0.54) 100%),
+    radial-gradient(circle at 78% 34%, rgba(240, 201, 93, 0.18), transparent 30%),
+    url("/menu_background.png") center / cover no-repeat;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.04);
+}
+
+.home-page-background::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.02), rgba(0, 0, 0, 0.16)),
+    linear-gradient(90deg, rgba(9, 13, 17, 0.18), transparent 24%, transparent 76%, rgba(9, 13, 17, 0.32));
+  pointer-events: none;
+}
+
+.home-page-background > * {
+  position: relative;
+  z-index: 1;
+}
+
 .home-copy {
   display: grid;
   align-content: center;
@@ -449,13 +573,122 @@ h2 {
   width: 100%;
 }
 
-.home-action-selector {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
+.home-page.setup-active .home-actions {
+  max-width: 920px;
+  margin: 0 auto;
 }
 
-.home-action-selector button.mode-active {
+.home-main-menu-shell {
+  display: grid;
+  gap: 14px;
+  align-content: center;
+  justify-items: center;
+  width: 100%;
+}
+
+.home-setup-header h2 {
+  margin-bottom: 8px;
+  color: #f4ead0;
+  font-size: 1.45rem;
+}
+
+.home-setup-header p:last-child {
+  margin-bottom: 0;
+}
+
+.home-main-menu-buttons {
+  display: grid;
+  gap: 12px;
+  width: min(100%, 320px);
+}
+
+.home-main-button {
+  display: grid;
+  place-items: center;
+  min-height: 88px;
+  border-radius: 12px;
+  padding: 18px 20px;
+  text-align: center;
+}
+
+.home-main-button strong {
+  font-size: clamp(1.45rem, 3vw, 2.05rem);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.home-setup-panel {
+  display: grid;
+  gap: 16px;
+}
+
+.home-setup-header {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 14px;
+}
+
+.home-back-button {
+  min-width: 74px;
+}
+
+.home-setup-section {
+  display: grid;
+  gap: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  padding: 14px;
+  background:
+    linear-gradient(160deg, rgba(240, 201, 93, 0.08), rgba(255, 255, 255, 0.02)),
+    rgba(255, 255, 255, 0.04);
+}
+
+.home-section-copy {
+  display: grid;
+  gap: 6px;
+}
+
+.home-section-copy h3 {
+  margin: 0;
+  color: #f0c95d;
+  font-size: 0.94rem;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.home-section-copy p {
+  margin-bottom: 0;
+  color: #c8c4b8;
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
+.home-mode-grid-wide {
+  grid-template-columns: 1fr;
+}
+
+.home-mode-grid-wide button {
+  display: grid;
+  justify-items: start;
+  gap: 6px;
+  min-height: 74px;
+  padding: 14px 16px;
+  text-align: left;
+}
+
+.home-mode-grid-wide button span {
+  color: inherit;
+  font-size: 0.84rem;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.home-mode-grid-wide button.secondary span {
+  color: #d8d4c4;
+}
+
+.home-mode-grid-wide button.mode-active {
   color: #101319;
   background: #f0c95d;
 }
@@ -478,6 +711,10 @@ h2 {
   align-items: center;
   gap: 8px;
   text-transform: none;
+}
+
+.home-setup-form {
+  gap: 14px;
 }
 
 .home-mode-grid {
@@ -2137,53 +2374,30 @@ h2 {
 }
 
 .unit-art-gunman::before,
-.unit-art-gunman::after {
+.unit-art-gunman::after,
+.unit-art-recon::before,
+.unit-art-recon::after,
+.unit-art-sniper::before,
+.unit-art-sniper::after,
+.unit-art-antiVehicle::before,
+.unit-art-antiVehicle::after,
+.unit-art-medic::before,
+.unit-art-medic::after,
+.unit-art-builder::before,
+.unit-art-builder::after {
   display: none;
 }
 
-.unit-art-gunman::after {
-  left: 5px;
-  top: 13px;
-  width: 24px;
-  height: 3px;
-  border-radius: 999px;
-  background: #1e2427;
-  transform: rotate(-16deg);
+.unit-art-recon {
+  width: 58px;
+  height: 58px;
+  background: url("/sprites/recon.png") center / contain no-repeat;
 }
 
-.unit-art-recon::before {
-  background:
-    radial-gradient(circle at 50% 4px, #f1d1a7 0 4px, transparent 5px),
-    linear-gradient(180deg, #d8d4c4 0 6px, #4f7e5d 6px 100%);
-}
-
-.unit-art-recon::after {
-  left: 6px;
-  top: 7px;
-  width: 20px;
-  height: 7px;
-  border-radius: 999px;
-  background:
-    radial-gradient(circle at 5px 50%, #101319 0 3px, transparent 4px),
-    radial-gradient(circle at 15px 50%, #101319 0 3px, transparent 4px),
-    #d8d4c4;
-}
-
-.unit-art-sniper::before {
-  background:
-    radial-gradient(circle at 50% 4px, #f1d1a7 0 4px, transparent 5px),
-    linear-gradient(180deg, #d8d4c4 0 6px, #596a42 6px 100%);
-}
-
-.unit-art-sniper::after {
-  left: 2px;
-  top: 13px;
-  width: 29px;
-  height: 3px;
-  border-radius: 999px;
-  background:
-    linear-gradient(90deg, #101319 0 70%, #d8d4c4 70% 78%, #101319 78%);
-  transform: rotate(-22deg);
+.unit-art-sniper {
+  width: 58px;
+  height: 58px;
+  background: url("/sprites/sniper.png") center / contain no-repeat;
 }
 
 .unit-art-tank {
@@ -2197,56 +2411,22 @@ h2 {
   display: none;
 }
 
-.unit-art-antiVehicle::before {
-  background:
-    radial-gradient(circle at 50% 4px, #f1d1a7 0 4px, transparent 5px),
-    linear-gradient(180deg, #d8d4c4 0 6px, #846c3d 6px 100%);
+.unit-art-antiVehicle {
+  width: 58px;
+  height: 58px;
+  background: url("/sprites/anti-tank.png") center / contain no-repeat;
 }
 
-.unit-art-antiVehicle::after {
-  left: 5px;
-  top: 8px;
-  width: 26px;
-  height: 5px;
-  border-radius: 999px 2px 2px 999px;
-  background:
-    linear-gradient(90deg, #222 0 42%, #d8d4c4 42% 52%, #222 52%);
-  transform: rotate(-30deg);
+.unit-art-medic {
+  width: 58px;
+  height: 58px;
+  background: url("/sprites/medic.png") center / contain no-repeat;
 }
 
-.unit-art-medic::before {
-  background:
-    radial-gradient(circle at 50% 4px, #f1d1a7 0 4px, transparent 5px),
-    linear-gradient(180deg, #f4ead0 0 6px, #218c74 6px 100%);
-}
-
-.unit-art-medic::after {
-  left: 11px;
-  top: 10px;
-  width: 11px;
-  height: 11px;
-  background:
-    linear-gradient(90deg, transparent 0 35%, #fff 35% 65%, transparent 65%),
-    linear-gradient(0deg, transparent 0 35%, #fff 35% 65%, transparent 65%),
-    #d94848;
-  border-radius: 2px;
-}
-
-.unit-art-builder::before {
-  background:
-    radial-gradient(circle at 50% 4px, #f1d1a7 0 4px, transparent 5px),
-    linear-gradient(180deg, #f0c95d 0 6px, #7a704e 6px 100%);
-}
-
-.unit-art-builder::after {
-  left: 2px;
-  top: 15px;
-  width: 26px;
-  height: 7px;
-  border-radius: 2px;
-  background:
-    linear-gradient(90deg, #7a4f2a 0 32%, #d8d4c4 32% 44%, #7a4f2a 44% 100%);
-  transform: rotate(-12deg);
+.unit-art-builder {
+  width: 58px;
+  height: 58px;
+  background: url("/sprites/logistics.png") center / contain no-repeat;
 }
 
 .unit-art-artillery,
@@ -2728,21 +2908,13 @@ h2 {
   left: 50%;
   top: 50%;
   z-index: 1;
-  display: grid;
-  place-items: center;
-  width: 28px;
-  height: 28px;
-  border: 2px solid rgba(40, 44, 38, 0.92);
-  border-radius: 50%;
+  width: 34px;
+  height: 34px;
   color: transparent;
-  background:
-    radial-gradient(circle at 50% 50%, #303731 0 18%, transparent 19%),
-    radial-gradient(circle at 50% 50%, color-mix(in srgb, var(--mine-owner-color, #f0c95d) 70%, #d9e6c8) 0 34%, #202622 35% 62%, transparent 63%),
-    repeating-conic-gradient(from 0deg, #181d1a 0deg 20deg, #4f584b 20deg 36deg);
+  background: url("/sprites/mine.png") center / contain no-repeat;
   box-shadow:
     0 2px 6px rgba(0, 0, 0, 0.55),
-    0 0 10px color-mix(in srgb, var(--mine-owner-color, #f0c95d) 38%, transparent),
-    inset 0 0 0 2px color-mix(in srgb, var(--mine-owner-color, #f0c95d) 28%, transparent);
+    0 0 10px color-mix(in srgb, var(--mine-owner-color, #f0c95d) 42%, transparent);
   font-size: 0;
   transform: translate(-50%, -50%);
   pointer-events: none;
@@ -2754,15 +2926,19 @@ h2 {
   position: absolute;
   left: 50%;
   top: 50%;
-  width: 34px;
-  height: 3px;
-  border-radius: 999px;
-  background: rgba(32, 38, 34, 0.92);
+  width: 42px;
+  height: 42px;
+  border: 2px solid color-mix(in srgb, var(--mine-owner-color, #f0c95d) 38%, rgba(31, 35, 30, 0.9));
+  border-radius: 50%;
+  opacity: 0.9;
   transform: translate(-50%, -50%);
 }
 
 .mine-marker::after {
-  transform: translate(-50%, -50%) rotate(90deg);
+  width: 48px;
+  height: 48px;
+  border-color: color-mix(in srgb, var(--mine-owner-color, #f0c95d) 18%, rgba(31, 35, 30, 0.72));
+  opacity: 0.55;
 }
 
 .smoke-marker {
