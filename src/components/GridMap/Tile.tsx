@@ -178,6 +178,12 @@ export default function Tile({
       <span className="army-stat-value">{value}</span>
     </>
   );
+  const renderBaseStatValue = (label: string, value: number, tone: 'attack' | 'defense') => (
+    <>
+      <span className={showIconLabels ? `base-stat-icon base-stat-icon-${tone}` : ''}>{label}</span>
+      <span className="base-stat-value">{value}</span>
+    </>
+  );
   const showTopHealthDisplay = unitHealthBarPosition === 'top';
   const showBarStats = unitStatDisplayMode === 'bar';
   const shouldMoveTopHealthBelowStats = showTopHealthDisplay && showBarStats && isCompactZoom;
@@ -351,8 +357,8 @@ export default function Tile({
           {baseQualityLevel >= 2 && <span className="base-quality-mark base-quality-mark-one" />}
           {baseQualityLevel >= 3 && <span className="base-quality-mark base-quality-mark-two" />}
           {hasConnectedBaseNetwork && <span className="base-network-mark" aria-hidden="true">↔</span>}
-          <span className="base-attack">A{baseAttack}</span>
-          <span className="base-defense">D{baseDefense}</span>
+          <span className="base-attack">{renderBaseStatValue(attackLabel, baseAttack, 'attack')}</span>
+          <span className="base-defense">{renderBaseStatValue(defenseLabel, baseDefense, 'defense')}</span>
         </button>
       )}
       {showContents && tile.base && !onBaseClick && (
@@ -374,8 +380,8 @@ export default function Tile({
           {baseQualityLevel >= 2 && <span className="base-quality-mark base-quality-mark-one" />}
           {baseQualityLevel >= 3 && <span className="base-quality-mark base-quality-mark-two" />}
           {hasConnectedBaseNetwork && <span className="base-network-mark" aria-hidden="true">↔</span>}
-          <span className="base-attack">A{baseAttack}</span>
-          <span className="base-defense">D{baseDefense}</span>
+          <span className="base-attack">{renderBaseStatValue(attackLabel, baseAttack, 'attack')}</span>
+          <span className="base-defense">{renderBaseStatValue(defenseLabel, baseDefense, 'defense')}</span>
         </span>
       )}
       {showContents && army && (

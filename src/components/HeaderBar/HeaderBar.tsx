@@ -29,6 +29,7 @@ type HeaderBarProps = {
   qualityTabHidden: boolean;
   musicVolume: number;
   vfxVolume: number;
+  onBackOutToMenu: () => void;
   onDevPlayerChange: (playerId: string) => void;
   onDevSpawnUnitTypeChange: (unitTypeId: UnitTypeId | '') => void;
   onMovementSoundModeChange: (mode: MovementSoundMode) => void;
@@ -76,6 +77,7 @@ export default function HeaderBar({
   qualityTabHidden,
   musicVolume,
   vfxVolume,
+  onBackOutToMenu,
   onDevPlayerChange,
   onDevSpawnUnitTypeChange,
   onMovementSoundModeChange,
@@ -102,6 +104,7 @@ export default function HeaderBar({
   const [activeSettingsCategory, setActiveSettingsCategory] = useState<SettingsCategory>('audio');
   const settingsRef = useRef<HTMLDivElement | null>(null);
   const gameCode = gameState?.game.id ?? null;
+  const isHomeMenu = !gameState;
   const selectedDevPlayerId = devPlayerId || currentPlayerId || gameState?.players[0]?.id || '';
   const leaderboardPlayers =
     gameState?.players
@@ -142,6 +145,17 @@ export default function HeaderBar({
       setActiveSettingsCategory('audio');
     }
   }, [activeSettingsCategory, isMatchSettingsVisible]);
+
+  useEffect(() => {
+    function handleOpenSettings() {
+      setIsSettingsOpen(true);
+    }
+
+    window.addEventListener('grid-warfare:open-settings', handleOpenSettings);
+    return () => {
+      window.removeEventListener('grid-warfare:open-settings', handleOpenSettings);
+    };
+  }, []);
 
   async function handleDevAddSupplies() {
     if (!gameState || !selectedDevPlayerId) return;
@@ -190,25 +204,80 @@ export default function HeaderBar({
     );
   }
 
-  function renderStatPositionExample() {
+  function renderExampleStatValue(label: string, value: number, tone: 'attack' | 'defense') {
     return (
-      <span className={`settings-example unit-stat-position-example ${unitStatDisplayMode}`} aria-hidden="true">
-        {unitStatDisplayMode === 'bar' ? (
-          <>
-            <span className="example-health-row">
-              <span className="example-health-fill" />
-              <span>A8</span>
-              <span>D5</span>
+      <>
+        <span className={unitStatLabelMode === 'icons' ? `army-stat-icon army-stat-icon-${tone}` : ''}>{label}</span>
+        <span className="army-stat-value">{value}</span>
+      </>
+    );
+  }
+
+  function renderStatPositionExample() {
+    const attackLabel = unitStatLabelMode === 'icons' ? '\u2694' : 'A';
+    const defenseLabel = unitStatLabelMode === 'icons' ? '\uD83D\uDEE1' : 'D';
+    const showTopHealthDisplay = unitHealthBarPosition === 'top';
+    return (
+      <span className="settings-example tile-display-example" aria-hidden="true">
+        <span className="tile-display-example-tile">
+          <span className={`tile-display-example-badge ${unitStatDisplayMode === 'bar' ? 'bar-mode' : 'corner-mode'}`}>
+            {unitStatDisplayMode === 'corners' ? (
+              <>
+                <span className="army-attack-chip tile-display-example-chip">
+                  {renderExampleStatValue(attackLabel, 8, 'attack')}
+                </span>
+                {unitDefenseValueVisible ? (
+                  <span className="army-defense-chip tile-display-example-chip">
+                    {renderExampleStatValue(defenseLabel, 5, 'defense')}
+                  </span>
+                ) : null}
+              </>
+            ) : null}
+            {showTopHealthDisplay && (
+              <span className="army-topline">
+                <span className="unit-hp-bar unit-hp-bar-healthy tile-display-example-hp">
+                  <span style={{ width: '72%' }} />
+                </span>
+                {unitStatDisplayMode === 'bar' ? (
+                  <span className="army-stat-pill">
+                    <span className="army-top-stat army-top-stat-attack">
+                      {renderExampleStatValue(attackLabel, 8, 'attack')}
+                    </span>
+                    {unitDefenseValueVisible ? <span className="army-stat-pill-divider" aria-hidden="true" /> : null}
+                    {unitDefenseValueVisible ? (
+                      <span className="army-top-stat army-top-stat-defense">
+                        {renderExampleStatValue(defenseLabel, 5, 'defense')}
+                      </span>
+                    ) : null}
+                  </span>
+                ) : null}
+              </span>
+            )}
+            <span className="unit-formation tile-display-example-formation">
+              <span className="unit-art unit-art-gunman tile-display-example-rifleman" />
             </span>
-            <span className="example-unit-dot" />
-          </>
-        ) : (
-          <>
-            <span className="example-corner-stat left">A8</span>
-            <span className="example-corner-stat right">D5</span>
-            <span className="example-unit-dot" />
-          </>
-        )}
+            {!showTopHealthDisplay && (
+              <span className="army-topline">
+                <span className="unit-hp-bar unit-hp-bar-healthy tile-display-example-hp">
+                  <span style={{ width: '72%' }} />
+                </span>
+                {unitStatDisplayMode === 'bar' ? (
+                  <span className="army-stat-pill">
+                    <span className="army-top-stat army-top-stat-attack">
+                      {renderExampleStatValue(attackLabel, 8, 'attack')}
+                    </span>
+                    {unitDefenseValueVisible ? <span className="army-stat-pill-divider" aria-hidden="true" /> : null}
+                    {unitDefenseValueVisible ? (
+                      <span className="army-top-stat army-top-stat-defense">
+                        {renderExampleStatValue(defenseLabel, 5, 'defense')}
+                      </span>
+                    ) : null}
+                  </span>
+                ) : null}
+              </span>
+            )}
+          </span>
+        </span>
       </span>
     );
   }
@@ -232,31 +301,82 @@ export default function HeaderBar({
   }
 
   function renderStatLabelExample() {
+    const attackLabel = unitStatLabelMode === 'icons' ? '\u2694' : 'A';
+    const defenseLabel = unitStatLabelMode === 'icons' ? '\uD83D\uDEE1' : 'D';
+    const showTopHealthDisplay = unitHealthBarPosition === 'top';
     return (
-      <span className="settings-example label-style-example" aria-hidden="true">
-        {unitStatLabelMode === 'icons' ? (
-          <>
-            <span>Sword 8</span>
-            <span>Shield 5</span>
-          </>
-        ) : (
-          <>
-            <span>A8</span>
-            <span>D5</span>
-          </>
-        )}
+      <span className="settings-example tile-display-example" aria-hidden="true">
+        <span className="tile-display-example-tile">
+          <span className={`tile-display-example-badge ${unitStatDisplayMode === 'bar' ? 'bar-mode' : 'corner-mode'}`}>
+            {unitStatDisplayMode === 'corners' ? (
+              <>
+                <span className="army-attack-chip tile-display-example-chip">
+                  {renderExampleStatValue(attackLabel, 8, 'attack')}
+                </span>
+                {unitDefenseValueVisible ? (
+                  <span className="army-defense-chip tile-display-example-chip">
+                    {renderExampleStatValue(defenseLabel, 5, 'defense')}
+                  </span>
+                ) : null}
+              </>
+            ) : null}
+            {showTopHealthDisplay && (
+              <span className="army-topline">
+                <span className="unit-hp-bar unit-hp-bar-healthy tile-display-example-hp">
+                  <span style={{ width: '72%' }} />
+                </span>
+                {unitStatDisplayMode === 'bar' ? (
+                  <span className="army-stat-pill">
+                    <span className="army-top-stat army-top-stat-attack">
+                      {renderExampleStatValue(attackLabel, 8, 'attack')}
+                    </span>
+                    {unitDefenseValueVisible ? <span className="army-stat-pill-divider" aria-hidden="true" /> : null}
+                    {unitDefenseValueVisible ? (
+                      <span className="army-top-stat army-top-stat-defense">
+                        {renderExampleStatValue(defenseLabel, 5, 'defense')}
+                      </span>
+                    ) : null}
+                  </span>
+                ) : null}
+              </span>
+            )}
+            <span className="unit-formation tile-display-example-formation">
+              <span className="unit-art unit-art-gunman tile-display-example-rifleman" />
+            </span>
+            {!showTopHealthDisplay && (
+              <span className="army-topline">
+                <span className="unit-hp-bar unit-hp-bar-healthy tile-display-example-hp">
+                  <span style={{ width: '72%' }} />
+                </span>
+                {unitStatDisplayMode === 'bar' ? (
+                  <span className="army-stat-pill">
+                    <span className="army-top-stat army-top-stat-attack">
+                      {renderExampleStatValue(attackLabel, 8, 'attack')}
+                    </span>
+                    {unitDefenseValueVisible ? <span className="army-stat-pill-divider" aria-hidden="true" /> : null}
+                    {unitDefenseValueVisible ? (
+                      <span className="army-top-stat army-top-stat-defense">
+                        {renderExampleStatValue(defenseLabel, 5, 'defense')}
+                      </span>
+                    ) : null}
+                  </span>
+                ) : null}
+              </span>
+            )}
+          </span>
+        </span>
       </span>
     );
   }
 
   return (
     <>
-      <header className="app-header">
+      <header className={`app-header${isHomeMenu ? ' home-app-header' : ''}`}>
         <div className="app-header-title">
           <strong>Grid Warfare</strong>
           {gameCode && <span>Game {gameCode}</span>}
         </div>
-        <div className="app-header-actions">
+        <div className={`app-header-actions${isHomeMenu ? ' home-header-actions' : ''}`}>
           {playerName && <span className="header-player">{playerName}</span>}
           {import.meta.env.DEV && gameState?.game.status === 'active' && (
             <div className="dev-toolbar">
@@ -307,10 +427,14 @@ export default function HeaderBar({
               Leaderboard
             </button>
           ) : null}
-          <button className="secondary info-button" type="button" onClick={() => setIsInfoOpen(true)}>
-            Info
+          <button
+            className={`secondary info-button${isHomeMenu ? ' home-info-button' : ''}`}
+            type="button"
+            onClick={() => setIsInfoOpen(true)}
+          >
+            {isHomeMenu ? 'How to Play' : 'Info'}
           </button>
-          <MusicPlayer volume={musicVolume} autoPlay={!gameState} />
+          {!isHomeMenu && <MusicPlayer volume={musicVolume} autoPlay={!gameState} />}
           <div className="settings-toolbar" ref={settingsRef}>
             <button
               className="secondary settings-icon-button"
@@ -624,6 +748,7 @@ export default function HeaderBar({
                         game={gameState.game}
                         players={gameState.players}
                         currentPlayerId={currentPlayerId}
+                        onBackOut={onBackOutToMenu}
                         onMessage={setSettingsMessage}
                       />
                       {settingsMessage && <p className="settings-message">{settingsMessage}</p>}
@@ -710,65 +835,112 @@ export default function HeaderBar({
           <section className="modal info-modal" role="dialog" aria-modal="true" aria-labelledby="info-title">
             <div className="modal-heading">
               <div>
-                <p className="eyebrow">Reference</p>
-                <h2 id="info-title">Rules and Buffs</h2>
+                <p className="eyebrow">{isHomeMenu ? 'Main Menu' : 'Reference'}</p>
+                <h2 id="info-title">{isHomeMenu ? 'How to Play' : 'Rules and Buffs'}</h2>
               </div>
               <button className="icon-button secondary" type="button" onClick={() => setIsInfoOpen(false)}>
                 X
               </button>
             </div>
 
-            <div className="info-grid">
-              <section className="info-section">
-                <h3>Controls</h3>
-                <ul>
-                  <li>Left click selects units, bases, movement targets, and attack targets.</li>
-                  <li>Right click one of your units to open its actions.</li>
-                  <li>Middle mouse drag pans the map. Mouse wheel zooms toward your cursor.</li>
-                </ul>
-              </section>
+            {isHomeMenu ? (
+              <div className="home-how-to-steps">
+                <article className="home-guide-card home-guide-step">
+                  <span className="home-guide-step-number">1</span>
+                  <div>
+                    <h3>Select a Unit</h3>
+                    <p>Select units to move them and perform actions like attacking, building a base, or setting up support actions.</p>
+                  </div>
+                </article>
+                <article className="home-guide-card home-guide-step">
+                  <span className="home-guide-step-number">2</span>
+                  <div>
+                    <h3>Generate Supplies and XP</h3>
+                    <p>Every action generates some supplies and XP, and the start of each round also gives you more supplies to work with.</p>
+                  </div>
+                </article>
+                <article className="home-guide-card home-guide-step">
+                  <span className="home-guide-step-number">3</span>
+                  <div>
+                    <h3>Spend Supplies at Bases</h3>
+                    <p>Use supplies to spawn units, upgrade barracks to unlock stronger units, and unlock better building and support options.</p>
+                  </div>
+                </article>
+                <article className="home-guide-card home-guide-step">
+                  <span className="home-guide-step-number">4</span>
+                  <div>
+                    <h3>Play to Unit Strengths</h3>
+                    <p>Different units specialize in different jobs, like extra range, higher damage with lower health, or bonus damage against tanks and buildings.</p>
+                  </div>
+                </article>
+                <article className="home-guide-card home-guide-step">
+                  <span className="home-guide-step-number">5</span>
+                  <div>
+                    <h3>Level Up Your Commander</h3>
+                    <p>As you earn XP, you level up and gain skill points that can be spent in the skill tree for passive boosts like more attack, more defense, or extra supplies each round.</p>
+                  </div>
+                </article>
+                <article className="home-guide-card home-guide-step">
+                  <span className="home-guide-step-number">6</span>
+                  <div>
+                    <h3>Push Toward the Win Condition</h3>
+                    <p>Each mode has its own win condition, but the core goal is always to eliminate enemy units, destroy bases, and earn as much XP as possible.</p>
+                  </div>
+                </article>
+              </div>
+            ) : (
+              <div className="info-grid">
+                <section className="info-section">
+                  <h3>Controls</h3>
+                  <ul>
+                    <li>Left click selects units, bases, movement targets, and attack targets.</li>
+                    <li>Right click one of your units to open its actions.</li>
+                    <li>Middle mouse drag pans the map. Mouse wheel zooms toward your cursor.</li>
+                  </ul>
+                </section>
 
-              <section className="info-section">
-                <h3>Turns</h3>
-                <ul>
-                  <li>Units can move up to their movement limit over multiple moves during your turn.</li>
-                  <li>Each unit gets one action unless a rule says otherwise.</li>
-                  <li>Fortified units cannot move for 2 turns.</li>
-                </ul>
-              </section>
+                <section className="info-section">
+                  <h3>Turns</h3>
+                  <ul>
+                    <li>Units can move up to their movement limit over multiple moves during your turn.</li>
+                    <li>Each unit gets one action unless a rule says otherwise.</li>
+                    <li>Fortified units cannot move for 2 turns.</li>
+                  </ul>
+                </section>
 
-              <section className="info-section">
-                <h3>Map Buffs</h3>
-                <ul>
-                  <li>Base aura gives nearby friendly units extra defense.</li>
-                  <li>Trenches give units bonus attack and defense.</li>
-                  <li>Connected trench lines between bases share the highest barracks level and add supplies.</li>
-                  <li>An enemy unit on the trench network breaks the connected-base bonus.</li>
-                </ul>
-              </section>
+                <section className="info-section">
+                  <h3>Map Buffs</h3>
+                  <ul>
+                    <li>Base aura gives nearby friendly units extra defense.</li>
+                    <li>Trenches give units bonus attack and defense.</li>
+                    <li>Connected trench lines between bases share the highest barracks level and add supplies.</li>
+                    <li>An enemy unit on the trench network breaks the connected-base bonus.</li>
+                  </ul>
+                </section>
 
-              <section className="info-section">
-                <h3>Actions</h3>
-                <ul>
-                  <li>Fortify raises defense, lowers damage, and locks movement for 2 turns.</li>
-                  <li>Medics passively heal at round end, or can spend an action for a larger heal.</li>
-                  <li>Recon squads give their unit +3 movement and reveal fog up to 8 spaces away.</li>
-                  <li>Anti-Vehicle squads can place mines that punish Tanks crossing that tile.</li>
-                  <li>Artillery squads must stay solo and attack up to 6 spaces away without moving.</li>
-                  <li>Logistics squads can build bases and trenches. Logistics squads are consumed when making bases.</li>
-                  <li>Ruined bases turn gray and can be reclaimed by a solo Logistics squad for 50 supplies plus half their stored upgrade value.</li>
-                </ul>
-              </section>
+                <section className="info-section">
+                  <h3>Actions</h3>
+                  <ul>
+                    <li>Fortify raises defense, lowers damage, and locks movement for 2 turns.</li>
+                    <li>Medics passively heal at round end, or can spend an action for a larger heal.</li>
+                    <li>Recon squads give their unit +3 movement and reveal fog up to 8 spaces away.</li>
+                    <li>Anti-Vehicle squads can place mines that punish Tanks crossing that tile.</li>
+                    <li>Artillery squads must stay solo and attack up to 6 spaces away without moving.</li>
+                    <li>Logistics squads can build bases and trenches. Logistics squads are consumed when making bases.</li>
+                    <li>Ruined bases turn gray and can be reclaimed by a solo Logistics squad for 50 supplies plus half their stored upgrade value.</li>
+                  </ul>
+                </section>
 
-              <section className="info-section wide">
-                <h3>Composition Buffs</h3>
-                <ul>
-                  {compositionBuffs.map((buff) => (
-                    <li key={buff}>{buff}</li>
-                  ))}
-                </ul>
-              </section>
-            </div>
+                <section className="info-section wide">
+                  <h3>Composition Buffs</h3>
+                  <ul>
+                    {compositionBuffs.map((buff) => (
+                      <li key={buff}>{buff}</li>
+                    ))}
+                  </ul>
+                </section>
+              </div>
+            )}
           </section>
         </div>
       )}

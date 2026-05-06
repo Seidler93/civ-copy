@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   PLAYER_COLORS,
   kickLobbyPlayer,
@@ -25,6 +25,21 @@ export default function LobbyPage({ gameState, currentPlayerId, onLeave }: Lobby
   const allReady = enoughPlayers && gameState.players.every((player) => player.isReady);
   const canStart = isHost && allReady && !busyAction;
   const usedColors = new Set(gameState.players.filter((player) => player.id !== currentPlayerId).map((player) => player.color));
+
+  useEffect(() => {
+    if (!openPlayerMenuId) return undefined;
+
+    function handlePointerDown(event: PointerEvent) {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest('.lobby-player-menu-wrap')) return;
+      setOpenPlayerMenuId(null);
+    }
+
+    document.addEventListener('pointerdown', handlePointerDown);
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown);
+    };
+  }, [openPlayerMenuId]);
 
   const runLobbyAction = async (actionId: string, action: () => Promise<void>) => {
     setBusyAction(actionId);

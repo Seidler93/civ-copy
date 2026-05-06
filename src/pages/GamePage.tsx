@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { type CSSProperties, useEffect, useMemo, useRef, useState } from 'react';
 import { UPGRADE_CONFIG, BUILD_BASE_COST, MAX_ARTILLERY_UNITS, MAX_LOGISTICS_UNITS } from '../data/upgradeConfig';
 import { unitCostForLevel, UNIT_TYPES } from '../data/unitTypes';
 import ArmyPanel from '../components/ArmyPanel/ArmyPanel';
@@ -16,6 +16,7 @@ import {
   advanceSimultaneousRound,
   buildBaseWithBuilder,
   buildTrenchWithBuilder,
+  claimSupplyPlaneReward,
   combineArmies,
   devSpawnUnitAtTile,
   deploySmokeScreen,
@@ -105,6 +106,15 @@ interface GameToast {
   tone: 'base' | 'danger' | 'score';
 }
 
+interface SupplyPlaneState {
+  id: string;
+  hits: number;
+  top: string;
+  durationMs: number;
+  heading: 'east' | 'west';
+  claiming: boolean;
+}
+
 type UnitInstanceEntry = [string, UnitTypeId];
 
 interface CpuEconomicAction {
@@ -122,6 +132,7 @@ const UPGRADE_SOUND_PATH = '/audio/upgrade-sound.wav';
 const BASE_BUILD_SOUND_PATH = '/audio/base-build-sound.wav';
 const MOVEMENT_SOUND_PATH = '/audio/movement-sound.mp3';
 const DEATH_SOUND_PATH = '/audio/death1.wav';
+const SUPPLY_PLANE_SOUND_PATH = '/audio/default-button-click.wav';
 
 interface GamePageProps {
   gameState: GameState;
@@ -177,6 +188,8 @@ export default function GamePage({
   const [movementDebugEntries, setMovementDebugEntries] = useState<string[]>([]);
   const [queuedMovePreview, setQueuedMovePreview] = useState<QueuedMovePreview | null>(null);
   const [toasts, setToasts] = useState<GameToast[]>([]);
+  const [supplyPlane, setSupplyPlane] = useState<SupplyPlaneState | null>(null);
+  const [supplyPlaneStatus, setSupplyPlaneStatus] = useState<string | null>(null);
   const [isTalentTreeOpen, setIsTalentTreeOpen] = useState(false);
   const [busyTalentId, setBusyTalentId] = useState<TalentId | null>(null);
   const cpuTurnKeyRef = useRef('');
@@ -189,11 +202,19 @@ export default function GamePage({
   const selectedArmy = gameState.armies.find((army) => army.id === selectedArmyId) ?? null;
   const currentTurnPlayer = gameState.players.find((player) => player.id === gameState.game.currentTurnPlayerId) ?? null;
   const isTimedMode = gameState.game.mode === 'timed-simultaneous';
+  const isDevSoloGame = import.meta.env.DEV && gameState.game.code === 'SOLO';
   const isMyTurn =
     gameState.game.status === 'active' &&
     !gameState.game.isPaused &&
     !currentPlayer.isEliminated &&
     (isTimedMode || gameState.game.currentTurnPlayerId === currentPlayer.id);
+  const canLaunchSupplyPlane =
+    gameState.game.status === 'active' &&
+    !gameState.game.isPaused &&
+    !isTimedMode &&
+    !currentPlayer.isEliminated &&
+    (!isMyTurn || isDevSoloGame) &&
+    currentPlayer.lastSupplyPlaneRewardTurnNumber !== gameState.game.turnNumber;
 
   const tileById = useMemo(() => new Map(gameState.tiles.map((tile) => [tile.id, tile])), [gameState.tiles]);
   const selectedTile = selectedArmy ? tileById.get(selectedArmy.tileId) ?? null : null;
@@ -234,6 +255,43 @@ export default function GamePage({
       setToasts((current) => current.filter((entry) => entry.id !== id));
     }, 4200);
   }
+
+  useEffect(() => {
+    if (gameState.game.status !== 'active' || isTimedMode || currentPlayer.isEliminated) {
+      setSupplyPlane(null);
+      setSupplyPlaneStatus(null);
+      return;
+    }
+    if (isMyTurn) {
+      setSupplyPlane(null);
+      setSupplyPlaneStatus('Supply planes return while it is your turn.');
+      return;
+    }
+    if (gameState.game.isPaused) {
+      setSupplyPlane(null);
+      setSupplyPlaneStatus('Supply planes are grounded while the game is paused.');
+      return;
+    }
+    if (currentPlayer.lastSupplyPlaneRewardTurnNumber === gameState.game.turnNumber) {
+      setSupplyPlane(null);
+      setSupplyPlaneStatus('Supply plane reward claimed for this turn.');
+      return;
+    }
+    if (supplyPlane) {
+      setSupplyPlaneStatus(`Hit the plane ${Math.max(0, 3 - supplyPlane.hits)} more time${3 - supplyPlane.hits === 1 ? '' : 's'} for bonus supplies.`);
+      return;
+    }
+    setSupplyPlaneStatus('Spawn a supply plane and click it 3 times for bonus supplies.');
+  }, [
+    currentPlayer.isEliminated,
+    currentPlayer.lastSupplyPlaneRewardTurnNumber,
+    gameState.game.isPaused,
+    gameState.game.status,
+    gameState.game.turnNumber,
+    isMyTurn,
+    isTimedMode,
+    supplyPlane,
+  ]);
 
   useEffect(() => {
     const snapshotKey = `${gameState.game.id}:${currentPlayer.id}`;
@@ -966,6 +1024,55 @@ export default function GamePage({
     );
   }
 
+  function handleLaunchSupplyPlane() {
+    if (!canLaunchSupplyPlane || supplyPlane) return;
+    setSupplyPlane({
+      id: crypto.randomUUID(),
+      hits: 0,
+      top: `${16 + Math.random() * 38}%`,
+      durationMs: 6400 + Math.floor(Math.random() * 1200),
+      heading: Math.random() > 0.5 ? 'east' : 'west',
+      claiming: false,
+    });
+    setSupplyPlaneStatus('Plane in the air. Hit it 3 times before it escapes.');
+    playUiSound(SUPPLY_PLANE_SOUND_PATH, 0.32);
+  }
+
+  async function handleSupplyPlaneHit() {
+    if (!supplyPlane || supplyPlane.claiming) return;
+    const nextHits = supplyPlane.hits + 1;
+    playUiSound(RIFLEMAN_SHOT_SOUND_PATH, 0.22);
+    if (nextHits < 3) {
+      setSupplyPlane((current) => (current ? { ...current, hits: nextHits } : current));
+      setSupplyPlaneStatus(`Direct hit. ${3 - nextHits} more to claim the supplies.`);
+      return;
+    }
+
+    setSupplyPlane((current) => (current ? { ...current, hits: nextHits, claiming: true } : current));
+    try {
+      const result = await claimSupplyPlaneReward(gameState.game.id, currentPlayer.id);
+      setSupplyPlane(null);
+      setSupplyPlaneStatus('Supply plane intercepted. Reward secured.');
+      setMessage(result);
+      pushToast({
+        title: 'Supply Drop',
+        message: result,
+        tone: 'score',
+      });
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : 'Supply plane reward failed.';
+      setSupplyPlane(null);
+      setSupplyPlaneStatus(errorMessage);
+      setMessage(errorMessage);
+    }
+  }
+
+  function handleSupplyPlaneEscape() {
+    if (!supplyPlane || supplyPlane.claiming) return;
+    setSupplyPlane(null);
+    setSupplyPlaneStatus('The supply plane escaped. Launch another one while you wait.');
+  }
+
   function showMoveAnimation(tile: TileDoc, fromTile: TileDoc, durationMs = MOVE_ANIMATION_STEP_MS) {
     const id = `${tile.id}_${Date.now()}_${Math.random()}`;
     setMoveAnimations((current) => [
@@ -1057,7 +1164,14 @@ export default function GamePage({
   return (
     <section className="game-page">
       <aside className="left-rail">
-        <TurnPanel game={gameState.game} currentPlayer={currentPlayer} turnPlayer={currentTurnPlayer} />
+        <TurnPanel
+          game={gameState.game}
+          currentPlayer={currentPlayer}
+          turnPlayer={currentTurnPlayer}
+          canLaunchSupplyPlane={canLaunchSupplyPlane && !supplyPlane}
+          supplyPlaneStatus={supplyPlaneStatus}
+          onLaunchSupplyPlane={handleLaunchSupplyPlane}
+        />
         <PlayerPanel players={gameState.players} currentPlayerId={currentPlayer.id} />
         <ArmyPanel
           army={selectedArmy}
@@ -1071,6 +1185,24 @@ export default function GamePage({
         />
       </aside>
       <div className="map-stage">
+        {supplyPlane && (
+          <button
+            className={`supply-plane-overlay ${supplyPlane.heading === 'west' ? 'heading-west' : ''}`}
+            type="button"
+            style={
+              {
+                top: supplyPlane.top,
+                '--plane-duration': `${supplyPlane.durationMs}ms`,
+              } as CSSProperties
+            }
+            onClick={handleSupplyPlaneHit}
+            onAnimationEnd={handleSupplyPlaneEscape}
+            aria-label={`Supply plane with ${Math.max(0, 3 - supplyPlane.hits)} hits remaining`}
+          >
+            <span className="supply-plane-body" aria-hidden="true" />
+            <span className="supply-plane-hit-counter">{Math.max(0, 3 - supplyPlane.hits)}</span>
+          </button>
+        )}
         <GridMap
           gameState={gameState}
           currentPlayer={currentPlayer}

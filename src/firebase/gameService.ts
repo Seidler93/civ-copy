@@ -153,6 +153,7 @@ const MEDIC_PASSIVE_HEAL = 4;
 const MEDIC_ACTIVE_HEAL = 16;
 const ANTI_VEHICLE_MINE_DAMAGE = 30;
 const LOGISTICS_SCAVENGE_SUPPLIES = 20;
+const SUPPLY_PLANE_REWARD = 15;
 const QUALITY_HEALTH_BONUS_PER_LEVEL = 2;
 const BASE_AURA_DEFENSE_BONUS = 2;
 const TRENCH_ATTACK_BONUS = 2;
@@ -234,6 +235,7 @@ export async function createCpuGame(playerName: string, setup: GameSetupOptions 
     stats: makeEmptyPlayerStats(),
     isCpu: true,
     exploredTileIds: [],
+    lastSupplyPlaneRewardTurnNumber: null,
     joinedAt: serverTimestamp(),
   });
   await startGame(gameId);
@@ -290,6 +292,7 @@ export async function createDevSoloGame() {
       talents: {},
       isEliminated: false,
       stats: makeEmptyPlayerStats(),
+      lastSupplyPlaneRewardTurnNumber: null,
       joinedAt: serverTimestamp(),
     });
     const start = DEFAULT_MAP_TEMPLATE.startingPositions[player.startIndex];
@@ -756,6 +759,37 @@ export async function setGamePaused(gameId: string, playerId: string, isPaused: 
   );
 
   return isPaused ? 'Gameplay paused. Players can inspect the map, but actions are locked.' : 'Gameplay resumed.';
+}
+
+export async function claimSupplyPlaneReward(gameId: string, playerId: string) {
+  return runTransaction(db, async (transaction) => {
+    const gameRef = doc(db, 'games', gameId);
+    const playerRef = doc(db, 'games', gameId, 'players', playerId);
+    const [gameSnapshot, playerSnapshot] = await Promise.all([transaction.get(gameRef), transaction.get(playerRef)]);
+    if (!gameSnapshot.exists()) throw new Error('Game not found.');
+    if (!playerSnapshot.exists()) throw new Error('Player not found.');
+
+    const game = { id: gameSnapshot.id, ...gameSnapshot.data() } as GameDoc;
+    const player = { id: playerSnapshot.id, ...playerSnapshot.data() } as PlayerDoc;
+
+    if (game.status !== 'active') throw new Error('Supply planes are only available in active games.');
+    if (game.isPaused) throw new Error('Supply planes are unavailable while the game is paused.');
+    if (game.mode !== 'turn-based') throw new Error('Supply planes are only available in turn-based matches for now.');
+    if (player.isEliminated) throw new Error('Eliminated players cannot claim supply plane rewards.');
+    if (game.currentTurnPlayerId === playerId && game.code !== 'SOLO') {
+      throw new Error('Supply planes are only available while you are waiting for your turn.');
+    }
+    if (player.lastSupplyPlaneRewardTurnNumber === game.turnNumber) {
+      throw new Error('You already intercepted a supply plane this turn.');
+    }
+
+    transaction.update(playerRef, {
+      supplies: player.supplies + SUPPLY_PLANE_REWARD,
+      lastSupplyPlaneRewardTurnNumber: game.turnNumber,
+    });
+
+    return `Supply plane intercepted. +${SUPPLY_PLANE_REWARD} supplies.`;
+  });
 }
 
 export async function backOutOfGame(gameId: string, playerId: string) {
@@ -2912,11 +2946,12 @@ async function createPlayer(gameId: string, user: User, playerName: string, colo
     talentPoints: 0,
     talents: {},
     isEliminated: false,
-    isReady: false,
-    stats: makeEmptyPlayerStats(),
-    exploredTileIds: [],
-    joinedAt: serverTimestamp(),
-  });
+      isReady: false,
+      stats: makeEmptyPlayerStats(),
+      exploredTileIds: [],
+      lastSupplyPlaneRewardTurnNumber: null,
+      joinedAt: serverTimestamp(),
+    });
 }
 
 function normalizeRequestedGameCode(code: string) {

@@ -168,7 +168,7 @@ export default function GridMap({
     [gameState.tiles, selectedArmy],
   );
   const statScale = Math.max(0.72, Math.min(1, 1 / zoom));
-  const combatStatScale = Math.max(1, Math.min(2.2, 1 / zoom));
+  const combatStatScale = 1 / zoom;
   const visibleTileIds = useMemo(
     () => visibleTileIdsForPlayer(currentPlayer.id, gameState.tiles, gameState.armies),
     [currentPlayer.id, gameState.armies, gameState.tiles],

@@ -153,6 +153,11 @@ export default function App() {
     return gameState.players.find((player) => player.id === user?.uid) ?? null;
   }, [gameState, user?.uid]);
 
+  function handleLeaveGame() {
+    localStorage.removeItem('currentGameId');
+    setGameId('');
+  }
+
   if (!user) {
     return (
       <main className="app-shell">
@@ -211,12 +216,13 @@ export default function App() {
         onQualityTabHiddenChange={setQualityTabHidden}
         onMusicVolumeChange={setMusicVolume}
         onVfxVolumeChange={setVfxVolume}
+        onBackOutToMenu={handleLeaveGame}
       />
       {error && <div className="notice error">{error}</div>}
       <div className="app-content">
         {!gameId && <HomePage onGameSelected={setGameId} />}
         {gameId && gameState?.game.status === 'lobby' && (
-          <LobbyPage gameState={gameState} currentPlayerId={user.uid} onLeave={() => setGameId('')} />
+          <LobbyPage gameState={gameState} currentPlayerId={user.uid} onLeave={handleLeaveGame} />
         )}
         {gameId && (gameState?.game.status === 'active' || gameState?.game.status === 'finished') && currentPlayer && (
           <GamePage

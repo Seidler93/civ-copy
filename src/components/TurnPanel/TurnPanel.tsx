@@ -6,9 +6,19 @@ interface TurnPanelProps {
   game: GameDoc;
   currentPlayer: PlayerDoc;
   turnPlayer: PlayerDoc | null;
+  canLaunchSupplyPlane?: boolean;
+  supplyPlaneStatus?: string | null;
+  onLaunchSupplyPlane?: () => void;
 }
 
-export default function TurnPanel({ game, currentPlayer, turnPlayer }: TurnPanelProps) {
+export default function TurnPanel({
+  game,
+  currentPlayer,
+  turnPlayer,
+  canLaunchSupplyPlane = false,
+  supplyPlaneStatus = null,
+  onLaunchSupplyPlane,
+}: TurnPanelProps) {
   const isTimedMode = game.mode === 'timed-simultaneous';
   const isFinished = game.status === 'finished';
   const isMyTurn = !game.isPaused && (isTimedMode || game.currentTurnPlayerId === currentPlayer.id) && !currentPlayer.isEliminated;
@@ -54,13 +64,29 @@ export default function TurnPanel({ game, currentPlayer, turnPlayer }: TurnPanel
       ) : game.isPaused ? (
         <p className="muted">Gameplay is paused by the host. Map viewing stays available.</p>
       ) : isTimedMode ? (
-        <p className="muted">
-          Round timer: {Math.floor(remainingMs / 1000)}s remaining
-        </p>
+        <>
+          <p className="muted">
+            Round timer: {Math.floor(remainingMs / 1000)}s remaining
+          </p>
+          {canLaunchSupplyPlane && onLaunchSupplyPlane && (
+            <>
+              <button onClick={onLaunchSupplyPlane}>Spawn Supply Plane</button>
+              {supplyPlaneStatus ? <p className="muted">{supplyPlaneStatus}</p> : null}
+            </>
+          )}
+        </>
       ) : (
-        <button disabled={!isMyTurn} onClick={() => endTurn(game.id, currentPlayer.id)}>
-          {currentPlayer.isEliminated ? 'Eliminated' : isMyTurn ? 'End Turn' : `${turnPlayer?.name ?? "Player"}'s Turn`}
-        </button>
+        <>
+          <button disabled={!isMyTurn} onClick={() => endTurn(game.id, currentPlayer.id)}>
+            {currentPlayer.isEliminated ? 'Eliminated' : isMyTurn ? 'End Turn' : `${turnPlayer?.name ?? "Player"}'s Turn`}
+          </button>
+          {canLaunchSupplyPlane && onLaunchSupplyPlane && (
+            <>
+              <button className="secondary" onClick={onLaunchSupplyPlane}>Spawn Supply Plane</button>
+              {supplyPlaneStatus ? <p className="muted">{supplyPlaneStatus}</p> : null}
+            </>
+          )}
+        </>
       )}
     </section>
   );

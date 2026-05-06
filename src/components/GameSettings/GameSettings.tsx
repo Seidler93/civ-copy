@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { backOutOfGame, kickPlayerFromGame, resetGameToLobby, setGamePaused, transferGameHost } from '../../firebase/gameService';
 import type { GameDoc, PlayerDoc } from '../../types/gameTypes';
 
@@ -6,15 +6,31 @@ interface GameSettingsProps {
   game: GameDoc;
   players: PlayerDoc[];
   currentPlayerId: string;
+  onBackOut: () => void;
   onMessage: (message: string) => void;
 }
 
-export default function GameSettings({ game, players, currentPlayerId, onMessage }: GameSettingsProps) {
+export default function GameSettings({ game, players, currentPlayerId, onBackOut, onMessage }: GameSettingsProps) {
   const [isBusy, setIsBusy] = useState(false);
   const [confirmingAction, setConfirmingAction] = useState<'end' | 'backout' | 'kick' | null>(null);
   const [targetPlayerId, setTargetPlayerId] = useState('');
   const [openPlayerMenuId, setOpenPlayerMenuId] = useState<string | null>(null);
   const isHost = game.hostPlayerId === currentPlayerId;
+
+  useEffect(() => {
+    if (!openPlayerMenuId) return undefined;
+
+    function handlePointerDown(event: PointerEvent) {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest('.lobby-player-menu-wrap')) return;
+      setOpenPlayerMenuId(null);
+    }
+
+    document.addEventListener('pointerdown', handlePointerDown);
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown);
+    };
+  }, [openPlayerMenuId]);
 
   async function handleEndGame() {
     setIsBusy(true);
@@ -35,6 +51,7 @@ export default function GameSettings({ game, players, currentPlayerId, onMessage
       const result = await backOutOfGame(game.id, currentPlayerId);
       onMessage(result);
       setConfirmingAction(null);
+      onBackOut();
     } catch (err) {
       onMessage(err instanceof Error ? err.message : 'Could not back out.');
     } finally {
@@ -100,18 +117,18 @@ export default function GameSettings({ game, players, currentPlayerId, onMessage
       <h2>Game Controls</h2>
       {confirmingAction === null && (
         <>
+          {isHost && (
+            <button className="secondary" disabled={isBusy} onClick={handlePauseToggle}>
+              {game.isPaused ? 'Resume Gameplay' : 'Pause Gameplay'}
+            </button>
+          )}
           <button className="danger-button" disabled={isBusy} onClick={() => setConfirmingAction('backout')}>
             Back Out
           </button>
           {isHost && (
-            <>
-              <button className="secondary" disabled={isBusy} onClick={handlePauseToggle}>
-                {game.isPaused ? 'Resume Gameplay' : 'Pause Gameplay'}
-              </button>
-              <button className="danger-button" disabled={isBusy} onClick={() => setConfirmingAction('end')}>
-                End Game
-              </button>
-            </>
+            <button className="danger-button" disabled={isBusy} onClick={() => setConfirmingAction('end')}>
+              Exit Game
+            </button>
           )}
           <div className="match-party-list">
             <div className="match-party-heading">
@@ -180,23 +197,35 @@ export default function GameSettings({ game, players, currentPlayerId, onMessage
         </>
       )}
       {confirmingAction === 'end' && (
-        <div className="confirm-actions">
-          <button className="danger-button" disabled={isBusy} onClick={handleEndGame}>
-            {isBusy ? 'Ending...' : 'Are You Sure?'}
-          </button>
-          <button className="secondary" disabled={isBusy} onClick={() => setConfirmingAction(null)}>
-            Cancel
-          </button>
+        <div className="modal-backdrop settings-confirm-backdrop" role="presentation">
+          <section className="modal settings-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="exit-game-confirm-title">
+            <h3 id="exit-game-confirm-title">Are you sure?</h3>
+            <p className="settings-confirm-copy">This will end the current match and send everyone back to the lobby.</p>
+            <div className="confirm-actions">
+              <button className="danger-button" disabled={isBusy} onClick={handleEndGame}>
+                {isBusy ? 'Exiting...' : 'Exit Game'}
+              </button>
+              <button className="secondary" disabled={isBusy} onClick={() => setConfirmingAction(null)}>
+                Cancel
+              </button>
+            </div>
+          </section>
         </div>
       )}
       {confirmingAction === 'backout' && (
-        <div className="confirm-actions">
-          <button className="danger-button" disabled={isBusy} onClick={handleBackOut}>
-            {isBusy ? 'Backing out...' : 'Confirm Back Out'}
-          </button>
-          <button className="secondary" disabled={isBusy} onClick={() => setConfirmingAction(null)}>
-            Cancel
-          </button>
+        <div className="modal-backdrop settings-confirm-backdrop" role="presentation">
+          <section className="modal settings-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="back-out-confirm-title">
+            <h3 id="back-out-confirm-title">Are you sure?</h3>
+            <p className="settings-confirm-copy">You will leave this match and return to the main menu.</p>
+            <div className="confirm-actions">
+              <button className="danger-button" disabled={isBusy} onClick={handleBackOut}>
+                {isBusy ? 'Backing out...' : 'Back Out'}
+              </button>
+              <button className="secondary" disabled={isBusy} onClick={() => setConfirmingAction(null)}>
+                Cancel
+              </button>
+            </div>
+          </section>
         </div>
       )}
       {confirmingAction === 'kick' && (

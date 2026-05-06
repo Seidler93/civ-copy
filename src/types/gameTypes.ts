@@ -74,6 +74,7 @@ export interface PlayerDoc {
   stats?: PlayerStats;
   isCpu?: boolean;
   exploredTileIds?: string[];
+  lastSupplyPlaneRewardTurnNumber?: number | null;
   joinedAt: unknown;
 }
 
